@@ -32,10 +32,11 @@ class _Escaped(JSONResponse):
 @router.get("/settings", response_class=_Escaped)
 def read_settings() -> dict:
     try:
-        settings = _atlas()._record.snapshot().settings()
+        snap = _atlas()._record.snapshot()
+        settings = snap.settings()
     except FileNotFoundError:
         raise HTTPException(404, "Atlas has no record yet. Run hermes atlas setup first.")
-    return settings_rules.view(settings, sources.defaults())
+    return settings_rules.view(settings, sources.defaults(), snap.imports())
 
 
 @router.patch("/settings")

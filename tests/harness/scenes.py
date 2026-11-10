@@ -27,7 +27,7 @@ from atlas import rules
 from atlas.model import Done, Fact, HarnessId, Inference, SendStatus, Skipped, Status, Who, skip_key
 from atlas.record import Record, Snapshot
 
-from . import seeds, tutorial, world
+from . import exports, seeds, tutorial, world
 from .fake_llm import FakeLlm
 from .home import AtlasHome
 from .model import CORRECTED, STAGING, WRONG, corrections_model, filing_model, profile_model, world_model
@@ -742,8 +742,17 @@ def _tuesday_follow_up(home: AtlasHome) -> None:
         raise Failed(f"the decision slot asks {kept.decision}, not the bike route planner for the first time")
 
 
+def _no_proposals(home: AtlasHome, shown: dict[str, list[str]] | None = None) -> None:
+    """No card carries a proposal but those the tutorial has shown by then."""
+    proposed = {name: [_shown(p) for p in c["proposals"]] for name, (_, c) in _cards(_board(home)).items()
+                if c["proposals"]}
+    if proposed != (shown or {}):
+        raise Failed(f"the cards carry the proposals {proposed}, the tutorial {shown or {}}")
+
+
 def _idea_becomes_project(home: AtlasHome) -> None:
     _tick_files(home)
+    _no_proposals(home)
     head, left, step = tutorial.fenced_block("project (an idea until Wed 18 Nov)").splitlines()
     name, kind, last, star = re.match(r"^(.+?) · (.+?) · (\w+ \d+ \w+)  (★)  CHANGED$", head).groups()
     card = _changed_on_board(home, name)
@@ -763,6 +772,7 @@ def _idea_becomes_project(home: AtlasHome) -> None:
 
 def _split_by_itself(home: AtlasHome) -> None:
     snap = _tick_files(home)
+    _no_proposals(home)
     staging, billing = snap.pursuit(seeds.STAGING), snap.pursuit(seeds.BILLING)
     rotations = {seeds.evidence_id(s) for s in world.SESSIONS if s.title.startswith("rotate staging db password")}
     if len(rotations) != 2 or not rotations <= {m.evidence for m in staging.sessions}:
@@ -776,6 +786,7 @@ def _split_by_itself(home: AtlasHome) -> None:
 
 def _reactivated(home: AtlasHome) -> None:
     snap = _tick_files(home, ticks=2)
+    _no_proposals(home, {"Payments CI flakes": [ENDING_MARK]})
     keyboard = snap.pursuit("Keyboard firmware")
     session = seeds.evidence_id(world.by_title("keyboard debounce 10 ms"))
     if keyboard.status is not Status.ACTIVE or keyboard.focus:
@@ -919,7 +930,7 @@ def _profile_correction(home: AtlasHome) -> None:
     if reply is None:
         raise Failed(f"Atlas did not claim {said!r}")
     expect_all_lines(answer, reply)
-    [note] = [n for n in Record.open(home.record_root).snapshot().notes() if n.via == "telegram"]
+    [note] = [n for n in Record.open(home.record_root).snapshot().notes() if n.via == "telegram" and n.id != seeds.SPLIT_SAID.id]
     _corrected(home, note.id, home.now)
     before = home.files()
     if home.telegram(said, message_id=home.last_message_id) != reply or home.files() != before:
@@ -1162,6 +1173,118 @@ def _drag_to_parked(home: AtlasHome) -> None:
     _board_clicked(home, name, "Parked it.")
 
 
+# ------------------------------------------------------------------ scenes 16, 18, 35: web-chat exports
+
+def _drop_exports(home: AtlasHome, chatgpt=world.EXPORTED[world.GPT], claude=world.EXPORTED[world.CAI]) -> list[Path]:
+    """The owner moves the export zip files that arrived by email into ~/atlas/inbox/."""
+    inbox, arrived = home.record_root / "inbox", home.now - timedelta(hours=1)
+    return [*([exports.chatgpt_zip(inbox / "chatgpt-export.zip", chatgpt, arrived)] if chatgpt else []),
+            *([exports.claude_zip(inbox / "claude-export.zip", claude, arrived)] if claude else [])]
+
+
+def _imported(home: AtlasHome, dropped: list[Path], sessions: dict[HarnessId, tuple]) -> Snapshot:
+    """The tick reads every conversation of each export as a Session, deletes the files, and
+    never takes in the group chats."""
+    snap = _tick_files(home)
+    for harness, wanted in sessions.items():
+        held = {s.id for s in snap.sessions() if s.harness is harness}
+        if held != {seeds.evidence_id(s) for s in wanted}:
+            raise Failed(f"the record holds {len(held)} {harness.label} Sessions, not the export's {len(wanted)}")
+    if [p for p in dropped if p.exists()] or list((home.record_root / "inbox").iterdir()):
+        raise Failed("an export file is still in the inbox after its import")
+    planted = exports.GROUP_CHAT.encode()
+    for path in home.record_root.rglob("*"):
+        data = path.read_bytes() if path.is_file() else b""
+        if planted in (zstandard.ZstdDecompressor().decompressobj().decompress(data) if path.suffix == ".zst" else data):
+            raise Failed(f"the group chats reached {path.relative_to(home.record_root)}")
+    return snap
+
+
+def _web_chats_imported(home: AtlasHome) -> None:
+    dropped = _drop_exports(home)
+    snap = _imported(home, dropped, world.EXPORTED)
+    knee = snap.pursuit("Knee rehab plan")
+    knee_sessions = {seeds.evidence_id(world.by_title(t)) for t, f in world.TICK_FILINGS.items()
+                     if f.pursuit == knee.name and world.by_title(t) in world.EXPORTED[world.GPT]}
+    if knee.area != "health" or {m.evidence for m in knee.sessions} != knee_sessions:
+        raise Failed(f"the knee Pursuit is in {knee.area} with {len(knee.sessions)} Sessions")
+    for s in (*world.EXPORTED[world.GPT], *world.EXPORTED[world.CAI]):
+        card = snap.card(seeds.evidence_id(s))
+        if seeds.evidence_id(s) not in knee_sessions and (card is None or card.one_off_area is None):
+            raise Failed(f"the {s.harness.label} Session {s.title!r} is not kept as a one-off")
+    head, left, step = tutorial.fenced_block("Knee rehab plan · problem").splitlines()[:3]
+    name, kind, rest = head.split(" · ")
+    day, mark, proposal = re.split(r"\s{2,}", rest)
+    _, c = _cards(_board(home))[name]
+    shown = (c["kind"], c["last_worked"], "NEW" if c["new"] else None, [_shown(p) for p in c["proposals"]],
+             _shown(c["left_off"]), _shown(c["next"]))
+    wanted = (kind, day, mark, [proposal], left.split("Left off", 1)[1].strip(), step.split("Next", 1)[1].strip())
+    if shown != wanted:
+        raise Failed(f"the knee card shows {shown}, the tutorial {wanted}")
+    asked = len(home.ctx.fake_llm.calls)
+    _drop_exports(home)
+    _tick_files(home)
+    if len(home.ctx.fake_llm.calls) != asked or list((home.record_root / "inbox").iterdir()):
+        raise Failed("the same exports dropped again were filed again or kept")
+
+
+def _monday_before_exports(home: AtlasHome) -> None:
+    """Monday's Journal day as the tick after midnight wrote it, from the store Sessions alone."""
+    seeds.web_chats_added(seeds.monday_before_exports)(home.record_root)
+    home.set_clock(AFTER_MONDAY)
+    _tick_files(home)
+    home.set_clock(world.EXPORTS_AT)
+
+
+def _monday_corrected(home: AtlasHome) -> None:
+    before = Record.open(home.record_root).snapshot().journal(seeds.MONDAY)
+    if before is None or before.time.total != timedelta(hours=3, minutes=15):
+        raise Failed("Monday's Journal day is not written from the store Sessions before the exports")
+    _imported(home, _drop_exports(home), world.EXPORTED)
+    _tick_files(home)
+    snap = Record.open(home.record_root).snapshot()
+    if any(n.origin.value == "hand_edit" for n in snap.notes()):
+        raise Failed("the sweep took the corrected Journal day for a hand edit")
+    text = (home.record_root / "journal" / f"{seeds.MONDAY}.md").read_text()
+    body = "\n".join(map(as_shown, text.split("\n---\n", 1)[1].splitlines()))
+    day = tutorial.fenced_block(tutorial.JOURNAL_DAY).splitlines()
+    finished = day.index("Finished")
+    expect_lines("\n".join([*day[:finished], *day[finished + 2:]]), body)
+
+
+def _knee_said_done(home: AtlasHome) -> None:
+    prompt = _reply_once(home, "1 prompt", seeds.SUNDAY_BRIEF_ID)
+    line = next(x for x in tutorial.fenced_block("1 · Knee rehab plan").splitlines() if x.startswith("1 · Knee"))
+    step = re.split(r"\s{2,}", line)[-1].removesuffix(" [I]")
+    if not prompt.startswith('Resuming "Knee rehab plan".') or f"Next Step: {step[0].lower()}{step[1:]}" not in prompt:
+        raise Failed(f"the prompt for Step 1 reads {prompt!r}")
+    home.set_clock(world.SUNDAY_DONE_AT)
+    _reply_once(home, "1 done", seeds.SUNDAY_BRIEF_ID)
+    knee = Record.open(home.record_root).snapshot().pursuit(seeds.KNEE)
+    done = knee.past_steps[-1] if knee.past_steps else None
+    if done is None or not isinstance(done.ended, Done) or done.ended.how != "word":
+        raise Failed(f"the knee Step is {knee.next_step or done}, not done by your word")
+    home.set_clock(world.AFTER_SUNDAY)
+    _tick_files(home)
+    sunday = world.SUNDAY_DONE_AT.date()
+    if Record.open(home.record_root).snapshot().journal(sunday) is None:
+        raise Failed("Sunday's Journal day was not written")
+    home.set_clock(world.NEXT_EXPORT_AT)
+    snap = _imported(home, _drop_exports(home, chatgpt=(), claude=(world.SUNDAY_KNEE,)),
+                     {world.CAI: (world.SUNDAY_KNEE,)})
+    knee = snap.pursuit(seeds.KNEE)
+    if seeds.evidence_id(world.SUNDAY_KNEE) not in {m.evidence for m in knee.sessions}:
+        raise Failed("the claude.ai Session is not Evidence of the Knee rehab plan")
+    if knee.past_steps != (done,) or knee.next_step is not None or any(
+            h.actor.value == "Atlas" and "Step done" in h.statement.text for h in knee.history):
+        raise Failed("the later export marked the knee Step again")
+    corrected = snap.journal(sunday).corrections
+    wanted = f"{world.NEXT_EXPORT_AT:%a} {world.NEXT_EXPORT_AT.day} {world.NEXT_EXPORT_AT:%b}: added claude.ai " \
+             f"{world.SUNDAY_KNEE.start:%H:%M} ({world.SUNDAY_KNEE.minutes} min) when your claude.ai export arrived."
+    if corrected != (wanted,):
+        raise Failed(f"Sunday's Journal day reads corrections {corrected}, not {wanted!r}")
+
+
 # ------------------------------------------------------------------ scenes 22, 24, 37, 38: questions to Atlas
 
 def _ask(home: AtlasHome, said: str) -> str:
@@ -1286,6 +1409,11 @@ SCENES: dict[str, Scene] = {
     "25": Scene(world.FRIDAY_BRIEF_AT, seed=lambda home: seeds.after_scene_24(home.record_root), step=_held_step_first),
     "17": Scene(seeds.KNEE_FILED + timedelta(hours=12), seed=lambda home: seeds.after_scene_16(home.record_root),
                 step=_knee_proposal),
+    "16": Scene(world.EXPORTS_AT, seed=lambda home: seeds.web_chats_added(seeds.after_scene_6)(home.record_root),
+                step=_web_chats_imported, llm=filing_model),
+    "18": Scene(world.EXPORTS_AT, seed=_monday_before_exports, step=_monday_corrected, llm=filing_model),
+    "35": Scene(world.SUNDAY_PROMPT_AT, seed=lambda home: seeds.web_chats_added(seeds.sunday_knee_offered)(
+        home.record_root), step=_knee_said_done, llm=filing_model),
     "26": Scene(world.SKIP_AT, seed=lambda home: seeds.after_scene_25(home.record_root), step=_skip_by_word),
     "27": Scene(AT_LUNCH, seed=_monday_journaled, step=_read_without_atlas, llm=world_model),
     "28": Scene(world.PROFILE_AT, seed=lambda home: seeds.scene_28(home.record_root), step=_profile_correction,

@@ -302,7 +302,7 @@ class Turn:
     text: str
     part: str                               # "main", "subagent:<name>", "t3-child:<native id>"
     atlas_tool_turn: bool = False           # this exchange called atlas_* tools: an Atlas conversation (W Q14)
-    at_interpolated: bool = False           # D Q6: time set by interpolation (see sources.import_inbox)
+    at_interpolated: bool = False           # D Q6: time set by interpolation (see sources.webchat)
 
     @property
     def own(self) -> bool:

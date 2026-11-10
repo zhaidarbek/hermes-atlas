@@ -355,7 +355,7 @@ def test_a_session_the_model_answers_unusably_for_is_skipped_and_the_others_are_
     llm = FakeLlm({"atlas_file": [{"intent": ""}, answer(), answer()]})
     atlas = Atlas.open(record.root, llm=HostLlm(type("Ctx", (), {"llm": llm})()))
     with caplog.at_level(logging.WARNING, logger="atlas"):
-        assert atlas._file_quietly(TICK) == 2
+        assert len(atlas._file_quietly(TICK)) == 2
     snap = record.snapshot()
     assert {m.evidence for m in snap.pursuit("p-4k7q").sessions} == {OLD.id, second.id, third.id}
     assert filing.queue(snap, TICK) == [] and set(snap.filing_retries()) == {first.id}
@@ -370,7 +370,7 @@ def test_a_session_the_model_answers_unusably_for_is_skipped_and_the_others_are_
 def test_a_model_call_that_fails_stops_filing_for_the_tick(record):
     _waiting(record)
     llm = FakeLlm({})
-    assert Atlas.open(record.root, llm=HostLlm(type("Ctx", (), {"llm": llm})()))._file_quietly(TICK) == 0
+    assert Atlas.open(record.root, llm=HostLlm(type("Ctx", (), {"llm": llm})()))._file_quietly(TICK) == []
     assert len(llm.calls) == 1 and record.snapshot().filing_retries() == {}
 
 
@@ -417,3 +417,54 @@ def test_a_send_that_cannot_start_never_raises_out_of_the_tick_and_is_tried_twic
             assert home.cli("atlas", "tick", "--quiet").code == 0
         attempts = Record.open(home.record_root).snapshot().brief(world.FIRST_BRIEF_AT.date()).attempts
         assert len(attempts) == 2 and attempts[0].status is SendStatus.ARRIVAL_UNKNOWN
+
+
+def _llm(*answers: dict) -> tuple[FakeLlm, HostLlm]:
+    llm = FakeLlm({"atlas_file": list(answers)})
+    return llm, HostLlm(type("Ctx", (), {"llm": llm})())
+
+
+def test_a_session_whose_last_turn_falls_between_whole_minutes_is_filed_once(record):
+    odd = session("odd", EVENING + timedelta(seconds=37))
+    put(record, odd)
+    llm, host = _llm(answer())
+    atlas = Atlas.open(record.root, llm=host)
+    assert atlas._file_quietly(TICK) == [odd.id]
+    assert filing.queue(record.snapshot(), TICK) == []
+    assert atlas._file_quietly(TICK + timedelta(minutes=10)) == [] and len(llm.calls) == 1
+
+
+def test_a_session_that_grows_within_its_minute_is_filed_again_once(record):
+    odd = session("odd", EVENING + timedelta(seconds=7))
+    put(record, odd)
+    llm, host = _llm(answer(), answer())
+    atlas = Atlas.open(record.root, llm=host)
+    assert atlas._file_quietly(TICK) == [odd.id]
+    grown_at = odd.last_at + timedelta(seconds=30)
+    put(record, replace(odd, last_at=grown_at, turns=(*odd.turns, Turn("owner", grown_at, "one more thing", "main"))))
+    assert filing.queue(record.snapshot(), TICK) == [odd.id]
+    assert atlas._file_quietly(TICK) == [odd.id]
+    assert atlas._file_quietly(TICK) == [] and len(llm.calls) == 2
+
+
+def test_a_membership_written_to_the_minute_by_an_older_atlas_still_reads(record):
+    snap = record.snapshot()
+    text = (record.root / "pursuits" / "billing-export-service.md").read_text()
+    assert f"- {OLD.last_at:%Y-%m-%d %H:%M} ·" in text and f"{OLD.last_at:%H:%M}:00" not in text
+    assert snap.pursuit("p-4k7q").sessions == (Membership(OLD.id, OLD.last_at, True),)
+    odd = session("odd", EVENING + timedelta(seconds=37))
+    put(record, odd)
+    after = apply(record, filed(odd))
+    assert f"- {odd.last_at:%Y-%m-%d %H:%M:%S} ·" in (record.root / "pursuits" / "billing-export-service.md").read_text()
+    assert Membership(odd.id, odd.last_at, True) in after.pursuit("p-4k7q").sessions
+
+
+def test_a_pursuit_a_years_old_session_starts_is_parked_so_no_neglected_question_asks_about_it(record):
+    old = session("knee", datetime(2022, 12, 20, 18, 0, tzinfo=TZ))
+    put(record, old)
+    draft = PursuitDraft("Knee rehab plan", Kind.PROJECT, "health", (Membership(old.id, old.last_at, True),),
+                         ResumeNote((), (), (), (), (old.id,)), Inference("Ask for week 3.", (old.id,)))
+    after = apply(record, filed(old, into=None, new_pursuit=draft))
+    p = after.pursuit("Knee rehab plan")
+    assert (p.status, p.proposals) == (Status.PARKED, ())
+    assert p.id not in {q.id for q in rules.neglected(after, TICK.date())}

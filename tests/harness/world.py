@@ -51,7 +51,12 @@ WEEK_END = datetime(2026, 11, 22, 23, 59, tzinfo=TZ)
 PASTED_PASSWORD = "Lantern7-invented"      # scene 30: masked in every derived text, kept only in raw/
 PLANTED = "the quartz heron rollout"       # scene 30: words only the Session to forget holds
 CC, CX, DV, HM = HarnessId.CLAUDE_CODE, HarnessId.CODEX, HarnessId.DEVIN, HarnessId.HERMES
-GPT = HarnessId.CHATGPT
+GPT, CAI = HarnessId.CHATGPT, HarnessId.CLAUDE_AI
+EXPORTS_AT = datetime(2026, 11, 18, 9, 0, tzinfo=TZ)       # the tick after the owner drops both exports (scene 16)
+SUNDAY_PROMPT_AT = datetime(2026, 11, 22, 10, 55, tzinfo=TZ)  # "1 prompt" on Sunday's knee Step (scene 35)
+SUNDAY_DONE_AT = datetime(2026, 11, 22, 11, 40, tzinfo=TZ)   # "1 done", after the claude.ai Session
+AFTER_SUNDAY = datetime(2026, 11, 23, 0, 10, tzinfo=TZ)      # the tick that writes Sunday's Journal day
+NEXT_EXPORT_AT = datetime(2026, 11, 24, 9, 0, tzinfo=TZ)   # the tick after the next claude.ai export arrives
 
 
 @dataclass(frozen=True)
@@ -218,6 +223,22 @@ BACKFILL_PURSUITS: dict[str, tuple[str, tuple[str, ...]]] = {
 WEB_SESSIONS: tuple[WorldSession, ...] = (
     _s(GPT, "2026-11-16 19:10", 40, "knee physio weeks 1 and 2", "~", engaged=True),
 )
+# The two exports dropped on Wednesday (scene 16): one-off questions, and three ChatGPT Sessions of
+# the last month about the knee, Monday's among them. The first conversation has a message with no
+# time (D Q6).
+EXPORTED: dict[HarnessId, tuple[WorldSession, ...]] = {
+    GPT: (_s(GPT, "2026-09-12 10:00", 10, "sourdough starter ratio", "~"),
+          _s(GPT, "2026-10-03 18:00", 15, "translate a lease clause", "~"),
+          _s(GPT, "2026-10-28 20:00", 15, "knee pain after running", "~"),
+          _s(GPT, "2026-11-01 11:00", 10, "birthday gift ideas", "~"),
+          _s(GPT, "2026-11-05 19:30", 20, "knee physio exercises", "~"),
+          *WEB_SESSIONS),
+    CAI: (_s(CAI, "2026-10-10 09:00", 15, "email to the landlord", "~"),
+          _s(CAI, "2026-11-02 21:00", 20, "summary of a sleep paper", "~"),
+          _s(CAI, "2026-11-12 19:00", 10, "packing list for a weekend", "~")),
+}
+# The claude.ai Session where Sunday's prompt was pasted (scene 35), in the next claude.ai export.
+SUNDAY_KNEE = _s(CAI, "2026-11-22 11:00", 25, "knee week 3 progression", "~")
 MONDAY_PURSUITS: dict[str, tuple[str, tuple[str, ...]]] = {
     "Payments CI flakes": ("work", ("test_retry one worker", "invoice ids in payments")),
     "Billing export service": ("work", ("invoice ids in payments", "per-invoice vat rounding")),
@@ -241,6 +262,8 @@ class TickFiling:
     next_step: str | None = None
     kind: tuple[str, str] | None = None      # (Kind, the reason the Session shows)
     ending: tuple[str, str] | None = None    # (done or dropped, the reason the Session shows)
+    new: tuple[str, str] | None = None       # (Kind, Area): the Session starts the Pursuit
+    left_at: str | None = None               # the turn the Left off quotes, when not the last
 
 
 TICK_FILINGS: dict[str, TickFiling] = {
@@ -262,6 +285,12 @@ TICK_FILINGS: dict[str, TickFiling] = {
     "staging deploy config": TickFiling("Billing export: staging deploy"),
     "greenhouse evening check": TickFiling("Greenhouse logger", done_at="21:08", done="the logger writes every 5 minutes"),
     "keyboard debounce 10 ms": TickFiling("Keyboard firmware"),
+    "knee pain after running": TickFiling("Knee rehab plan", new=("problem", "health")),
+    "knee physio exercises": TickFiling("Knee rehab plan"),
+    "knee physio weeks 1 and 2": TickFiling(
+        "Knee rehab plan", left_off="Physio exercises listed for weeks 1 and 2; week 3 not planned", left_at="19:10",
+        next_step="Ask for a week-3 progression based on how week 2 felt"),
+    "knee week 3 progression": TickFiling("Knee rehab plan", done_at="11:03", done="the week-3 plan is on screen"),
 }
 
 
@@ -289,4 +318,4 @@ def via_interface(now: datetime) -> tuple[WorldSession, ...]:
 
 
 def by_title(title: str) -> WorldSession:
-    return next(s for s in (*SESSIONS, *WEB_SESSIONS) if s.title == title)
+    return next(s for s in (*SESSIONS, *WEB_SESSIONS, *EXPORTED[GPT], *EXPORTED[CAI], SUNDAY_KNEE) if s.title == title)

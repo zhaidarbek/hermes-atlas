@@ -24,13 +24,16 @@ import posixpath
 import re
 from dataclasses import replace
 from datetime import datetime, time, timedelta
-from typing import Mapping, NamedTuple
+from typing import Mapping, NamedTuple, Sequence
+from zoneinfo import ZoneInfo
 
 from . import rules
 from .model import (ChangeSettings, HarnessId, HarnessSetting, Note, NoteOrigin, Outcome, Owner, Settings)
-from .record import Snapshot
+from .record import ImportLog, Snapshot
 
 WEB_CHATS = (HarnessId.CHATGPT, HarnessId.CLAUDE_AI)
+NOT_ADDED = "NotAdded"
+"""The import log's note on an export of a web chat the owner has not added (atlas.app)."""
 STORE_HARNESSES = (HarnessId.CLAUDE_CODE, HarnessId.CODEX, HarnessId.DEVIN, HarnessId.HERMES)
 DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 GAP_MINUTES = range(1, 121)
@@ -234,13 +237,35 @@ def from_settings(snap: Snapshot, cmd: ChangeSettings, who: Owner, now: datetime
     return rules.Decision(snap.changes().put_settings(after).append_note(note), Outcome(True, (said,)))
 
 
-def added(s: Settings) -> list[tuple[str, str]]:
-    """Each web chat the owner added, with its state: (label, "waiting for an export in <inbox>")."""
-    return [(h.label, f"waiting for an export in {s.harnesses[h].roots[0]}")
-            for h in WEB_CHATS if h in s.harnesses and s.harnesses[h].roots]
+def added(s: Settings, imports: Sequence[ImportLog] = ()) -> list[tuple[str, str]]:
+    """Each web chat the owner added, with its state: "waiting for an export in <inbox>" until an
+    export of it is read, then what its last export gave; while a file of it, or of no web chat,
+    stays in the inbox because it could not be read in whole or in part, that file."""
+    imports = [e for e in imports if e.failure != NOT_ADDED]
+    out = []
+    for h in WEB_CHATS:
+        if h not in s.harnesses or not s.harnesses[h].roots:
+            continue
+        inbox = s.harnesses[h].roots[0]
+        kept = next((e for e in reversed(imports) if not e.deleted and e.harness in (h, None)), None)
+        last = kept or next((e for e in reversed(imports) if e.harness is h), None)
+        if last is None:
+            out.append((h.label, f"waiting for an export in {inbox}"))
+            continue
+        day = last.at.astimezone(ZoneInfo(s.timezone))
+        read = f"read {last.sessions} Session{'' if last.sessions == 1 else 's'} from the export of " \
+               f"{day:%a} {day.day} {day:%b}"
+        if last.deleted:
+            state = f"{read} and deleted it; waiting for the next one in {inbox}"
+        elif last.sessions:
+            state = f"{read}; part of it could not be read, so it stays in {inbox}"
+        else:
+            state = f"an export in {inbox} could not be read, so it stays there"
+        out.append((h.label, state))
+    return out
 
 
-def view(s: Settings, defaults: Mapping[HarnessId, str] = {}) -> dict:
+def view(s: Settings, defaults: Mapping[HarnessId, str] = {}, imports: Sequence[ImportLog] = ()) -> dict:
     """What the Settings tab shows: the Harnesses found and their folders (`always`: the one
     Atlas always reads, which has no remove control), the web chats added and their state, the
     exclusions, the times, the gap and Atlas's own chat."""
@@ -249,7 +274,7 @@ def view(s: Settings, defaults: Mapping[HarnessId, str] = {}) -> dict:
                   for h in STORE_HARNESSES if h in s.harnesses],
         "stores": [{"harness": h.value, "label": h.label} for h in STORE_HARNESSES],
         "interfaces": [{"label": "T3 Code" if k == "t3_code" else k, "root": v.root} for k, v in s.interfaces.items()],
-        "added": [{"label": label, "state": state} for label, state in added(s)],
+        "added": [{"label": label, "state": state} for label, state in added(s, imports)],
         "addable": [{"harness": h.value, "label": h.label} for h in WEB_CHATS if h not in s.harnesses],
         "exclusions": list(s.exclusions),
         "brief_at": f"{s.brief_at:%H:%M}",

@@ -20,17 +20,24 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo, available_timezones
 
-from . import __version__, activetime, ask, channel, converse, filing, forget, neglect, rules, schedule, settings_rules, sources
+from . import (__version__, activetime, ask, channel, converse, corrections, filing, forget, neglect, rules, schedule,
+               settings_rules, sources)
 from .librarian import JournalLines, Librarian, Llm, ModelError, Unusable
 from .model import (Answer, ApplyNote, Authority, BoardQ, ChangeSettings, ChannelSetting, Command, ConfirmForget,
                     Coverage, DayTime, EvidenceId, FindQ, HarnessId, HarnessSetting, InterfaceSetting, NeglectedQ, Owner,
                     OwnerMessage, Outcome, PeriodTimeQ, Profile, Query, Reply, RequestForget, ResumePromptQ, ResumeQ,
                     SendStatus, Sent, SentRef, SessionCard, Settings, Split, Status, WhichQ, sent_sha256)
-from .record import Blocked, ChangeSet, Conflict, Record, Snapshot
+from .record import Blocked, ChangeSet, Conflict, ImportLog, Record, Snapshot
+from .sources import webchat
 from .rules import Decision
 
 log = logging.getLogger("atlas")
 BATCH = 50
+IMPORT_BUDGET = 500
+"""Web-chat Sessions one tick puts in the record at most; a larger export goes on next tick."""
+IMPORT_FILES = 20
+"""Export files one tick reads at most; the others wait for the next tick."""
+NOT_ADDED = settings_rules.NOT_ADDED
 
 BOARD_URL = "http://127.0.0.1:9119/atlas"   # the Hermes v0.23.0 dashboard's default address, and Atlas's tab
 NO_MODEL = ("No model answered, so no Pursuits yet. Set auxiliary.atlas_backfill in Hermes's config and run "
@@ -232,21 +239,23 @@ class Atlas:
         Journal has, that day included, or since backfill built the Pursuits. The send phase runs
         after the lease is released, so another process's long collect never holds back the brief
         and a slow send never makes another tick skip collecting.
+        Web-chat exports in the inbox are imported after collecting, IMPORT_BUDGET Sessions a tick
+        at most, and each file whose every conversation the record then holds is deleted. A day the
+        Journal has already written that a Session filed this tick worked on is written again with
+        a "Corrected" line.
         # TODO pseudocode for what is still to come:
-        #   if lease.held: sources.release(consumed)                 # web-chat exports (#15)
-        #   if lease.held: days touched by late Evidence (#15) and by filing;
-        #     for each day closed: librarian.profile_pass(snap, day)       # daily (G3)
+        #   if lease.held: for each day closed: librarian.profile_pass(snap, day)       # daily (G3)
         #     weekly: librarian.regroup
         """
         hand_edits = len(self._record.reconcile())
         with schedule.TickLease(self._record.root) as lease:
             busy = not lease.held
-            collected = 0 if busy else self._collect_quietly()
-            filed = 0 if busy else self._file_quietly(now)
+            collected = 0 if busy else self._collect_quietly() + self._import_quietly(now)
+            filed: list[EvidenceId] = [] if busy else self._file_quietly(now)
             if not busy:
-                self._journal_quietly(now)
+                self._journal_quietly(now, filed)
         sent = self._send_due(now)
-        return TickReport(collected=collected, filed=filed, sent=sent, hand_edits=hand_edits, skipped_busy=busy)
+        return TickReport(collected=collected, filed=len(filed), sent=sent, hand_edits=hand_edits, skipped_busy=busy)
 
     # -------------------------------------------------------------- the owner and agents
 
@@ -427,6 +436,125 @@ class Atlas:
             log.warning("Atlas skipped collecting Sessions this tick (%s)", type(error).__name__)
             return 0
 
+    def _import_quietly(self, now: datetime) -> int:
+        """Imports the web-chat exports waiting in the inbox: the Sessions put in the record."""
+        try:
+            return self._import(now)
+        except Exception as error:
+            log.warning("Atlas skipped the web-chat exports this tick (%s)", type(error).__name__)
+            return 0
+
+    def _import(self, now: datetime) -> int:
+        """Each settled export file in the inbox of a web chat the owner added, oldest first, until
+        IMPORT_BUDGET Sessions are put or IMPORT_FILES files are read this tick. A file whose every
+        conversation the record then holds, or Forget keeps out or the file skips, is deleted after
+        that commit. Every other file read is noted in the import log by what it is, and read again
+        only once it changes: one that fails in whole or in part, and one of a web chat the owner
+        has not added, until they add it. A file the budget cut short is read again next tick,
+        where what the record already holds is skipped. A file that leaves the inbox or changes
+        leaves the log."""
+        snap = self._record.snapshot()
+        enabled = [h for h in webchat.WEB_CHATS if (setting := snap.settings().harnesses.get(h)) is not None
+                   and setting.enabled and setting.mode == "export"]
+        if not enabled:
+            return 0
+        inbox = self._record.root / "inbox"
+        waiting = webchat.waiting(inbox, now)
+        present = {stamp.key() for _, stamp in waiting}
+        noted = {e.file for e in snap.imports()
+                 if not e.deleted and not (e.failure == NOT_ADDED and e.harness in enabled)}
+        put, read, logged = 0, 0, []
+        for name, stamp in waiting:
+            if put >= IMPORT_BUDGET or read >= IMPORT_FILES:
+                break
+            if stamp.key() in noted:
+                continue
+            read += 1
+            try:
+                entry, n = self._import_one(inbox, name, stamp, enabled, IMPORT_BUDGET - put, now)
+            except Exception as error:
+                entry, n = ImportLog(None, now, 0, False, type(error).__name__, stamp.key()), 0
+            put += n
+            if entry is None:
+                continue
+            logged.append(entry)
+            if entry.failure and entry.failure != NOT_ADDED:
+                log.warning("Atlas kept a web-chat export in the inbox (%s, %d conversations unread)", entry.failure,
+                            entry.broken)
+        if logged or any(not e.deleted and e.file not in present for e in snap.imports()):
+            try:
+                self._decide(lambda s: Decision(s.changes().put_imports(
+                    [*(e for e in s.imports() if e.deleted or e.file in present), *logged]), Outcome(True, ())))
+            except Exception as error:
+                log.warning("Atlas could not note the exports it read (%s)", type(error).__name__)
+        return put
+
+    def _import_one(self, inbox: Path, name: str, stamp: "webchat.Stamp", enabled: Sequence[HarnessId], budget: int,
+                    now: datetime) -> tuple[ImportLog | None, int]:
+        """One file: its import log entry, None when the budget cut it short, and the Sessions put."""
+        export = webchat.read(inbox, name, stamp, enabled)
+        if export.failed is not None or export.harness is None:
+            failure = export.failed or (NOT_ADDED if export.other else "Unreadable")
+            return ImportLog(export.other, now, 0, False, failure, stamp.key(), export.broken, export.skipped), 0
+        n, whole, broken, error = self._import_file(export, budget, now)
+        if not whole:
+            return None, n
+        broken += export.broken
+        deleted = not broken and webchat.release(inbox, name, stamp)
+        failure = error or ("Unreadable" if broken else None if deleted else "NotDeleted")
+        held = len(export.conversations) - (broken - export.broken)
+        return ImportLog(export.harness, now, held, deleted, failure, stamp.key(), broken, export.skipped), n
+
+    def _import_file(self, export: webchat.Export, budget: int, now: datetime,
+                     attempts: int = 5) -> tuple[int, bool, int, str | None]:
+        """Puts the export's conversations the record does not hold as they are now, BATCH to a
+        commit and at most `budget`. A conversation Forget keeps out is skipped; one the record
+        cannot hold (no time, text it cannot write) is counted as broken and the others go on.
+        Returns how many it put, whether the record now holds every conversation that is neither
+        forgotten nor broken, how many are broken, and the type of the first failure."""
+        put, pending = 0, list(export.conversations)
+        bad: dict[str, str] = {}
+        while pending:
+            if put >= budget:
+                return put, False, len(bad), None
+            for _ in range(attempts):
+                snap = self._record.snapshot()
+                forgotten, settings, held = snap.forgotten().skip_keys, snap.settings(), snap.held()
+                batch: list[webchat.Imported] = []
+                rest: list[webchat.Conversation] = []
+                for n, c in enumerate(pending):
+                    if len(batch) >= min(BATCH, budget - put):
+                        rest = pending[n:]
+                        break
+                    try:
+                        i = webchat.session(c, snap.copy, settings, now)
+                    except Exception as error:
+                        bad.setdefault(c.key, type(error).__name__)
+                        continue
+                    part = held.get(i.evidence.parts[0].origin)
+                    if not i.skip_keys & forgotten and (part is None or part.fingerprint != i.evidence.parts[0].fingerprint):
+                        batch.append(i)
+                if not batch:
+                    pending = rest
+                    break
+                changes, kept = _put_sessions(snap, [sources.CollectedSession(i.evidence, i.raw, skip_keys=i.skip_keys)
+                                                     for i in batch])
+                try:
+                    self._record.commit(changes)
+                except Blocked:
+                    return put, False, len(bad), None
+                except Conflict:
+                    continue
+                put += len(kept)
+                if len(kept) < len(batch):
+                    return put, False, len(bad), None
+                pending = rest
+                break
+            else:
+                log.warning("Atlas left a web-chat export to the next tick: the record kept changing while it wrote it")
+                return put, False, len(bad), None
+        return put, True, len(bad), next(iter(bad.values()), None)
+
     def _collect(self, every: bool) -> BackfillReport:
         """Collect, then read and commit BATCH Sessions at a time: every Session, or those with a
         part the record does not hold as it is now. Each commit is whole, so an interrupted run
@@ -525,20 +653,21 @@ class Atlas:
                 return
         log.warning("Atlas left the Pursuits to the next backfill: the record kept changing while it wrote them")
 
-    def _file_quietly(self, now: datetime) -> int:
-        """Files the Sessions waiting (filing.queue), oldest last turn first, each in its own
-        commit. A Session the model answers unusably for waits out its back-off and the others go
+    def _file_quietly(self, now: datetime) -> list[EvidenceId]:
+        """Files the Sessions waiting (filing.queue), each in its own commit, and returns those it
+        filed. A Session the model answers unusably for waits out its back-off and the others go
         on; a model call that fails stops filing for this tick, as every call would fail. Logged
         as counts and error types."""
         if self._llm is None:
-            return 0
+            return []
         try:
             waiting = filing.queue(self._record.snapshot(), now)
         except Exception as error:
             log.warning("Atlas skipped filing this tick (%s)", type(error).__name__)
-            return 0
+            return []
         librarian = Librarian(self._llm, self._record)
-        filed = unusable = 0
+        filed: list[EvidenceId] = []
+        unusable = 0
         for n, id in enumerate(waiting[:filing.BUDGET]):
             try:
                 snap = self._record.snapshot()
@@ -556,7 +685,7 @@ class Atlas:
                 break
             try:
                 self._decide(lambda s: filing.apply(s, made, now))
-                filed += 1
+                filed.append(id)
             except Exception as error:
                 log.warning("Atlas left one Session to the next tick: it could not file it (%s)",
                             type(error).__name__)
@@ -564,21 +693,32 @@ class Atlas:
             log.warning("Atlas left %d Sessions to file later: the model's filing was unusable", unusable)
         return filed
 
-    def _journal_quietly(self, now: datetime) -> None:
+    def _journal_quietly(self, now: datetime, filed: Sequence[EvidenceId] = ()) -> None:
+        """Writes the days closed since the newest day the Journal has, then the earlier days it
+        has written that a Session in `filed` worked on, each with its correction."""
         try:
             snap = self._record.snapshot()
             days = snap.journal_days()
             since = days[-1] if days else _built(snap)
-            if since is not None and self._llm is not None:
-                self._journal(Librarian(self._llm, self._record), since, self._today(now) - timedelta(days=1))
+            if since is None or self._llm is None:
+                return
+            until = self._today(now) - timedelta(days=1)
+            librarian = Librarian(self._llm, self._record)
+            self._journal(librarian, since, until, now=now)
+            late = corrections.late_days(snap, filed, set(days), since)
+            if late:
+                self._journal(librarian, min(late), until, only=late, now=now)
         except Exception as error:
             log.warning("Atlas skipped the Journal this tick (%s)", type(error).__name__)
 
-    def _journal(self, librarian: Librarian, since: date | None, until: date, attempts: int = 5) -> None:
-        """Writes each day from `since` (every day when None) to `until` whose file is missing or
-        out of date (rules.journal_due), oldest first. Stops at the first day the model gives no
-        lines for, logged, and leaves it and the days after it to the next run. When a Session
-        a day reads is removed or changed before the day commits, it plans again from that day."""
+    def _journal(self, librarian: Librarian, since: date | None, until: date, attempts: int = 5,
+                 only: set[date] | None = None, now: datetime | None = None) -> None:
+        """Writes each day from `since` (every day when None) to `until`, of `only` when given,
+        whose file is missing or out of date (rules.journal_due), oldest first. Stops at the first
+        day the model gives no lines for, logged, and leaves it and the days after it to the next
+        run. When a Session a day reads is removed or changed before the day commits, it plans
+        again from that day. A day the Journal had already written that gains Sessions is
+        corrected as of `now`."""
         for _ in range(attempts):
             snap = self._record.snapshot()
             settings = snap.settings()
@@ -589,8 +729,10 @@ class Atlas:
             timed = rules.timed(snap, one_offs, start - settings.gap if start else None)
             try:
                 for day, sessions in rules.workdays(timed, settings, since, until).items():
+                    if only is not None and day not in only:
+                        continue
                     since = day
-                    if not self._journal_day(librarian, snap, day, sessions, held):
+                    if not self._journal_day(librarian, snap, day, sessions, held, now):
                         return
                 return
             except Conflict:
@@ -599,7 +741,7 @@ class Atlas:
                     since)
 
     def _journal_day(self, librarian: Librarian, snap: Snapshot, day: date, sessions: Sequence[activetime.TimedSession],
-                     held: set[EvidenceId]) -> bool:
+                     held: set[EvidenceId], now: datetime | None = None) -> bool:
         """Writes `day` when it is due. False when the model gave no lines, logged. A day whose
         file Atlas cannot read is logged and never written over; one it cannot write is logged
         and left to the next run. Raises Conflict when a Session
@@ -624,7 +766,8 @@ class Atlas:
                         day.isoformat(), _why(error))
             return False
         try:
-            self._record.commit(rules.journal_day(snap, day, active, lines).changes)
+            corrected = corrections.line(snap, current, sessions, day, now) if now is not None else None
+            self._record.commit(rules.journal_day(snap, day, active, lines, corrected).changes)
         except Conflict:
             raise
         except Exception as error:

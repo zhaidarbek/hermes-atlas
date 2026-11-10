@@ -258,3 +258,23 @@ def test_a_secret_in_a_pursuit_or_area_name_is_masked_in_the_journal_and_what_ba
     assert ran.code == 0 and "Journal" in ran.out and SECRET not in ran.out
     text = (home.record_root / "journal" / "2026-11-16.md").read_text()
     assert SECRET not in text and "[secret: github token]" in text
+
+
+def test_a_day_already_written_gains_a_correction_line_from_its_evidence_diff_once(home):
+    record = Record.open(home.record_root)
+    s = record.snapshot().settings()
+    record.commit(record.snapshot().changes().put_settings(replace(s, harnesses={**s.harnesses, **seeds.WEB_CHATS})))
+    tick(home)
+    before = snap(home).journal(MONDAY)
+    assert before.corrections == ()
+    late = late_web_session(home)
+    home.ctx.fake_llm = FakeLlm({"atlas_journal": lambda call: {"worked_on": [], "finished": [], "decided": []}})
+    home.set_clock(TUESDAY_TICK + timedelta(minutes=10))
+    tick(home)
+    after = snap(home).journal(MONDAY)
+    assert late.id in after.evidence and after.worked_on == before.worked_on
+    assert after.corrections == ("Tue 17 Nov: added ChatGPT 20:30 (12 min) when your ChatGPT export arrived.",)
+    assert not [n for n in snap(home).notes() if n.origin is NoteOrigin.HAND_EDIT]
+    home.set_clock(TUESDAY_TICK + timedelta(minutes=20))
+    tick(home)
+    assert snap(home).journal(MONDAY).corrections == after.corrections

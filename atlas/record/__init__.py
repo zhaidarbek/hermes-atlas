@@ -93,6 +93,9 @@ log = logging.getLogger(__name__)
 _HISTORY_ID = re.compile(r"h-\d+")
 
 
+IMPORTS_KEPT = 50
+
+
 class Conflict(Exception):
     """A file this ChangeSet touches changed since its Snapshot was taken. Re-plan."""
 
@@ -153,6 +156,23 @@ class FilingRetry:
     last_at: datetime
     failures: int
     retry_at: datetime
+
+
+@dataclass(frozen=True)
+class ImportLog:
+    """One web-chat export file Atlas read: its Harness, how many of its Sessions the record
+    holds, and whether the file was deleted or kept, with the type of its failure and how many of
+    its conversations were broken or skipped (no text, or one id twice). A file that could not be
+    read at all names no Harness. `file` is what the file was (device, inode, size, modified), so
+    a kept file is read again only once it changes. No name or text of the file is kept."""
+    harness: HarnessId | None
+    at: datetime
+    sessions: int
+    deleted: bool
+    failure: str | None
+    file: str
+    broken: int = 0
+    skipped: int = 0
 
 
 @dataclass(frozen=True)
@@ -323,9 +343,9 @@ class Snapshot:
     def sessions(self, since: datetime | None = None, day: date | None = None) -> Sequence[SessionEvidence]:
         """Oldest first. `since` keeps Sessions with a turn at or after it, reading only the front
         matter of the others; `day` those that ran on it. A Session that Forget removes while
-        this lists them is left out."""
-        every = (_codec.parse("session", data, self._tz) for path in self._session_paths()
-                 if (since is None or self._ends_after(path, since)) and (data := self._read(path)) is not None)
+        this lists them is left out, and so is one whose file cannot be read, logged."""
+        every = (s for path in self._session_paths()
+                 if (since is None or self._ends_after(path, since)) and (s := self._readable_session(path)) is not None)
         return sorted((s for s in every if (since is None or s.last_at.timestamp() >= since.timestamp()) and (
             day is None or s.started.astimezone(self._tz).date() <= day <= s.last_at.astimezone(self._tz).date())),
                       key=lambda s: (s.started.timestamp(), s.id))
@@ -420,6 +440,14 @@ class Snapshot:
                                             datetime.fromisoformat(r["retry_at"]))
                 for id, r in json.loads(data).items()}
 
+    def imports(self) -> tuple[ImportLog, ...]:
+        data = self._read(_layout.IMPORTS)
+        if data is None:
+            return ()
+        return tuple(ImportLog(HarnessId(r["harness"]) if r["harness"] else None, datetime.fromisoformat(r["at"]),
+                               int(r["sessions"]), bool(r["deleted"]), r["failure"], str(r["file"]),
+                               int(r.get("broken", 0)), int(r.get("skipped", 0))) for r in json.loads(data))
+
     def pending_applies(self) -> Sequence[Note]:
         """HAND_EDIT and REFUSED_UPDATE Notes not yet applied: what "apply" acts on. Offered once in
         Atlas's next answer (Note.offered), always listed in the Review."""
@@ -449,10 +477,23 @@ class Snapshot:
 
     def _ends_after(self, path: str, since: datetime) -> bool:
         try:
-            last = _codec.session_front(_front_matter(self._root / path))["last_at"]
+            last = _codec._as_datetime(_codec.session_front(_front_matter(self._root / path))["last_at"])
+            return _codec.local(last, self._tz) >= since
         except FileNotFoundError:
             return False
-        return _codec.local(last, self._tz) >= since
+        except (ValueError, TypeError, KeyError, AttributeError, OverflowError) as error:
+            log.warning("Atlas skipped a Session file it could not read (%s)", type(error).__name__)
+            return False
+
+    def _readable_session(self, path: str) -> SessionEvidence | None:
+        data = self._read(path)
+        if data is None:
+            return None
+        try:
+            return _codec.parse("session", data, self._tz)
+        except (ValueError, TypeError, KeyError, AttributeError, OverflowError) as error:
+            log.warning("Atlas skipped a Session file it could not read (%s)", type(error).__name__)
+            return None
 
     def _session_paths(self) -> list[str]:
         return sorted(str(p.relative_to(self._root)) for p in (self._root / "evidence").glob("*/*/*/*/session.md"))
@@ -866,6 +907,16 @@ class ChangeSet:
                                 "retry_at": r.retry_at.isoformat()} for id, r in sorted(retries.items())},
                           sort_keys=True).encode() if retries else None
         return self._write(_layout.FILING_RETRY, data)
+
+    def put_imports(self, log: Sequence[ImportLog]) -> "ChangeSet":
+        """The import log: every entry of a file kept in the inbox, which the tick drops once the
+        file leaves it, and the newest IMPORTS_KEPT of the files deleted."""
+        deleted = [e for e in log if e.deleted][-IMPORTS_KEPT:]
+        data = json.dumps([{"harness": e.harness.value if e.harness else None, "at": e.at.isoformat(), "sessions": e.sessions,
+                            "deleted": e.deleted, "failure": e.failure, "file": e.file, "broken": e.broken,
+                            "skipped": e.skipped}
+                           for e in log if not e.deleted or e in deleted]).encode()
+        return self._write(_layout.IMPORTS, data)
 
     def mark_seen(self, marks: Mapping[PursuitId, HistoryId]) -> "ChangeSet":
         """Merged into seen.json as the commit finds it, never compared: a mark only moves forward,
@@ -1294,7 +1345,7 @@ class Record:
         snapshot folders."""
         tops = [self.root / path for path in (*_layout.TOP_FILES.values(), _layout.SEEN)]
         nested = [p for folder in _layout.SNAPSHOT_FOLDERS for p in (self.root / folder).glob("**/*.md")]
-        pending = (self.root / _layout.PENDING_FORGET, self.root / _layout.FILING_RETRY)
+        pending = (self.root / _layout.PENDING_FORGET, self.root / _layout.FILING_RETRY, self.root / _layout.IMPORTS)
         return [str(p.relative_to(self.root)) for p in (*tops, *nested, *pending) if p.is_file()]
 
     def _read(self, path: str) -> bytes | None:

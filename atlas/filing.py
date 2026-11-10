@@ -15,20 +15,27 @@ from zoneinfo import ZoneInfo
 
 from . import forget, rules
 from .librarian import Filing
-from .model import (Actor, Cite, Done, EndingProposal, EvidenceId, Fact, HistoryId, HistoryLine, Inference,
-                    Membership, Outcome, Pursuit, ReopenProposal, SessionEvidence, Statement, Status, Step, StepId)
+from .model import (Actor, Cite, Done, EndingProposal, EvidenceId, Fact, FocusProposal, HistoryId, HistoryLine,
+                    Inference, Membership, Outcome, Pursuit, ReopenProposal, SessionEvidence, Statement, Status, Step,
+                    StepId)
 from .record import FilingRetry, Snapshot
 from .rules import Decision
 
 BUDGET = 20
 """Sessions one tick files at most; the rest wait for the next tick, so a tick stays short."""
 RETRY = (timedelta(hours=1), timedelta(days=1))
+NEW = timedelta(days=7)
+WORTH = 3
+"""A Pursuit Atlas created in the last NEW that WORTH Sessions of the last month worked on is new
+and worth pushing: Atlas proposes adding it to Focus (W Q10)."""
+MONTH = timedelta(days=30)
 """The wait after a Session's first unusable answer, doubled after each one more, up to the second."""
 
 
 def queue(snap: Snapshot, now: datetime) -> list[EvidenceId]:
-    """The Sessions waiting to be filed, by their last turn: none until backfill has built the
-    Pursuits, and none whose back-off runs at `now`."""
+    """The Sessions waiting to be filed, by their last turn, those of a web-chat export after the
+    others, so a large export never holds back today's Sessions: none until backfill has built
+    the Pursuits, and none whose back-off runs at `now`."""
     if not snap.holds_pursuits():
         return []
     retries = snap.filing_retries()
@@ -45,13 +52,14 @@ def queue(snap: Snapshot, now: datetime) -> list[EvidenceId]:
         if r is not None and _instant(r.last_at) == _instant(s.last_at) and _instant(now) < _instant(r.retry_at):
             continue
         if s.id in listed:
-            if _instant(s.last_at) > _instant(listed[s.id]):
+            if _instant(s.last_at).replace(microsecond=0) > _instant(listed[s.id]):
                 waiting.append(s)
             continue
         card = _card(snap, s.id)
         if card is None or card.one_off_area is None:
             waiting.append(s)
-    return [s.id for s in sorted(waiting, key=lambda s: (_instant(s.last_at), s.id))]
+    late = snap.settings().late_harnesses
+    return [s.id for s in sorted(waiting, key=lambda s: (s.harness in late, _instant(s.last_at), s.id))]
 
 
 def apply(snap: Snapshot, f: Filing, now: datetime) -> Decision:
@@ -72,11 +80,11 @@ def apply(snap: Snapshot, f: Filing, now: datetime) -> Decision:
     moved = not holders
     if holders:
         for p in holders:
-            cs.put_pursuit(_filed(p, f, s, now, today) if p.id == f.pursuit else _grown(p, s))
+            cs.put_pursuit(_offered(_filed(p, f, s, now, today), now, today) if p.id == f.pursuit else _grown(p, s))
     elif f.pursuit is not None:
-        cs.put_pursuit(_filed(snap.pursuit(f.pursuit), f, s, now, today))
+        cs.put_pursuit(_offered(_filed(snap.pursuit(f.pursuit), f, s, now, today), now, today))
     elif f.new_pursuit is not None:
-        cs.put_pursuit(_created(snap, f, now, today))
+        cs.put_pursuit(_offered(_created(snap, f, now, today), now, today))
     else:
         card = replace(card, one_off_area=f.one_off_area, one_off_day=today)
         moved = False
@@ -143,6 +151,21 @@ def _filed(p: Pursuit, f: Filing, s: SessionEvidence, now: datetime, today) -> P
     return _history(q, lines, now)
 
 
+def _offered(p: Pursuit, now: datetime, today) -> Pursuit:
+    """The Pursuit with a proposal to add it to Focus when it is new and worth pushing: Atlas
+    created it in the last NEW, the owner has not touched it, it is active and outside Focus, and
+    WORTH Sessions of the last month worked on it. Proposed once; a star answers it."""
+    if p.focus or p.status is not Status.ACTIVE or today - p.created > NEW or not p.history \
+            or p.history[0].actor is not Actor.ATLAS or any(h.actor is Actor.OWNER for h in p.history) \
+            or any(isinstance(x, FocusProposal) and x.add for x in p.proposals):
+        return p
+    recent = tuple(m.evidence for m in p.sessions if m.advances and _instant(now) - _instant(m.at) <= MONTH)
+    if len(recent) < WORTH:
+        return p
+    reason = Inference(f"{len(recent)} Sessions of the last month worked on it, and it is not in Focus.", recent)
+    return replace(p, proposals=(*p.proposals, FocusProposal(True, reason, today)))
+
+
 def _grown(p: Pursuit, s: SessionEvidence, advances: bool = False) -> Pursuit:
     """The Pursuit listing the Session up to its last turn; once advancing, it stays so."""
     members = {m.evidence: m for m in p.sessions}
@@ -152,11 +175,16 @@ def _grown(p: Pursuit, s: SessionEvidence, advances: bool = False) -> Pursuit:
 
 
 def _created(snap: Snapshot, f: Filing, now: datetime, today) -> Pursuit:
+    """A Pursuit a Session starts, active or parked by backfill's own rule, so one an imported
+    years-old chat starts is parked and no Neglected question asks about it."""
     d = f.new_pursuit
     id = rules._pursuit_id(d, {p.id for p in snap.pursuits()})
     step = Step(StepId(f"s-{today:%Y%m%d}-1"), d.next_step, today) if isinstance(d.next_step, Inference) else None
     line = HistoryLine(HistoryId("h-0001"), now, Actor.ATLAS, Inference("Created from 1 Session", (f.evidence,)))
-    return Pursuit(id=id, name=d.name, kind=d.kind, area=d.area, status=Status.ACTIVE, focus=False, created=today,
+    tz = ZoneInfo(snap.settings().timezone)
+    last = max((m.at.astimezone(tz).date() for m in d.sessions), default=today)
+    status = rules.starting_status(last, today)
+    return Pursuit(id=id, name=d.name, kind=d.kind, area=d.area, status=status, focus=False, created=today,
                    continued=None, resume=d.resume, next_step=step, past_steps=(), filing_rules=(), sessions=d.sessions,
                    proposals=(), history=(line,))
 

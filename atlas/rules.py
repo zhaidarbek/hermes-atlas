@@ -840,10 +840,11 @@ def journal_due(current: JournalDay | None, time: DayTime, held: set[EvidenceId]
     return current is None or current.time != time or not _still_held(current.lines, held)
 
 
-def journal_day(snap: Snapshot, day: date, time: DayTime, lines: JournalLines) -> Decision:
+def journal_day(snap: Snapshot, day: date, time: DayTime, lines: JournalLines, corrected: str | None = None
+                ) -> Decision:
     """The day's file: its Active Time, the lines it had whose Sessions are all still held, then
     `lines`, which the model drafted from the Sessions the file did not cite yet, and its
-    corrections."""
+    corrections, `corrected` (corrections.line) added after them."""
     current = snap.journal(day)
     held = {h.id for h in snap.held().sessions()}
 
@@ -851,7 +852,8 @@ def journal_day(snap: Snapshot, day: date, time: DayTime, lines: JournalLines) -
         kept = tuple(s for s in (getattr(current, attr) if current else ()) if _still_held((s,), held))
         return kept + tuple(s for s in getattr(lines, attr) if s not in kept)
     written = JournalDay(day, time, section("worked_on"), section("decided"), section("finished"),
-                         current.corrections if current else ())
+                         (*(current.corrections if current else ()),
+                          *((corrected,) if corrected and (not current or corrected not in current.corrections) else ())))
     return Decision(snap.changes().put_journal(written), Outcome(True, ()))
 
 

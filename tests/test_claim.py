@@ -338,7 +338,7 @@ def test_an_accepted_command_stays_handled_when_its_commit_fails_partway(home, m
     assert reply == "Payments CI flakes: Step done.\nAgent-tooling newsletter: parked."
     assert home.hook_failures == []
     snap = Record.open(home.record_root).snapshot()
-    assert [n.atlas_reply for n in snap.notes() if n.via == "telegram"] == [reply]
+    assert [n.atlas_reply for n in snap.notes() if n.via == "telegram" and n.id != seeds.SPLIT_SAID.id] == [reply]
     assert snap.pursuit("p-2x7b").next_step is None and newsletter(home).status is Status.PARKED
     before = home.files()
     assert home.telegram(said, reply_to=BRIEF, message_id=home.last_message_id) == reply
@@ -368,7 +368,7 @@ def test_a_redelivery_stays_handled_while_its_transaction_cannot_be_applied(home
     monkeypatch.setattr(_txn, "_replace_below", real)
     snap = Record.open(home.record_root).snapshot()
     assert snap.pursuit("p-2x7b").next_step is None
-    assert [n.atlas_reply for n in snap.notes() if n.via == "telegram"] == [first]
+    assert [n.atlas_reply for n in snap.notes() if n.via == "telegram" and n.id != seeds.SPLIT_SAID.id] == [first]
     assert not list((home.record_root / ".atlas/txn").glob("*.ready"))
 
 

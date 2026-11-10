@@ -2,7 +2,7 @@
 Passive capture is the primary path (R1a Q4). Nothing here writes the record. It returns
 values, and atlas.app commits them.
 
-Public: probe, collect, release, Source (the seam for future Sources such as email or a
+Public: probe, collect, webchat (the inbox of web-chat exports), Source (the seam for future Sources such as email or a
 second-machine drop), CollectedSession, Pending, Found.
 
 Rules every adapter follows:
@@ -182,7 +182,7 @@ def folds(lineage: Iterable[Lineage]) -> dict[Key, Key]:
 
 
 def collect(s: Settings, held: Held, skip_keys: frozenset[str], sent: Sent, inbox: Path,
-            every: bool = False) -> tuple[list[Pending], list[ImportOutcome]]:
+            every: bool = False) -> tuple[list[Pending], list]:
     """The Sessions to read from every enabled store Harness: each with a part the record does
     not hold at the fingerprint it has now, or every Session when `every` (backfill), and each
     Session the record holds as its own that T3 Code now names as a subagent or as run through
@@ -193,7 +193,7 @@ def collect(s: Settings, held: Held, skip_keys: frozenset[str], sent: Sent, inbo
     store, it is read alone and the record puts it where it folded it. A store that cannot be
     read is logged and skipped. Forgotten Sessions and Sessions whose folder is excluded are left
     out before anything of them is read.
-    The inbox (web-chat exports, #15) is not read yet, so no ImportOutcome is returned."""
+    Web-chat exports in the inbox are read by `webchat`, on their own, so the second list stays empty."""
     enabled = {h: a for h, a in ADAPTERS.items()
                if (setting := s.harnesses.get(h)) is not None and setting.enabled and setting.mode == "store"}
     units: dict[Key, Unit] = {(u.harness, u.native_key): u for h, a in enabled.items()
@@ -321,23 +321,6 @@ def _forms(path: str) -> set[Path]:
         return {Path(os.path.normpath(full))}
 
 
-@dataclass(frozen=True)
-class ImportOutcome:
-    """One export file in inbox/ (D Q5)."""
-    file: Path
-    harness: HarnessId
-    sessions: int
-    failed: str | None                        # whole or partial failure: the file is KEPT and this is reported
-    group_chats_skipped: int                  # other people's messages, never taken in
-
-
-def release(outcomes: Sequence[ImportOutcome]) -> list[Path]:
-    """Called only after the commit that holds the imported Sessions. Deletes each file whose
-    outcome has failed=None; returns the deleted paths, which the tick records for the Board and
-    the Review ("Imported 143 ChatGPT Sessions and deleted the export"). A failed file stays."""
-    raise NotImplementedError
-
-
 def bind_caller(caller: "object") -> "BoundSession | None":
     """Resolve the live Session an agent tool call comes from, from the calling process.
     - hermes:      caller.hermes_session (the session_id kwarg Hermes passes to tool handlers).
@@ -368,5 +351,6 @@ def find_instruction(bound: "BoundSession", owner_words: str) -> "Instruction | 
 
 from ._adapters import ADAPTERS, T3_CODE, T3Code, defaults, linked  # noqa: E402  (the adapters build on the types above)
 from ._fold import _top, resolve  # noqa: E402
+from . import _webchat as webchat  # noqa: E402
 
 STORE_HARNESSES = tuple(ADAPTERS)

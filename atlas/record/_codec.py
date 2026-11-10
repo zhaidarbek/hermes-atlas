@@ -273,6 +273,16 @@ def _read_hm(s: str, tz: tzinfo | None) -> datetime:
     return _wall(datetime.strptime(s, "%Y-%m-%d %H:%M"), tz)
 
 
+def _hms(dt: datetime) -> str:
+    """A Session's last turn, to the second when it falls between whole minutes, so filing can
+    tell a Session that grew from the one it filed (an older record holds the minute only)."""
+    return dt.strftime("%Y-%m-%d %H:%M:%S" if dt.second else "%Y-%m-%d %H:%M")
+
+
+def _read_hms(s: str, tz: tzinfo | None) -> datetime:
+    return _wall(datetime.strptime(s, "%Y-%m-%d %H:%M:%S" if s.count(":") == 2 else "%Y-%m-%d %H:%M"), tz)
+
+
 def _short_day(d: date) -> str:
     return f"{d:%a} {d.day} {d:%b} {d.year}"
 
@@ -616,7 +626,7 @@ _RESUME_PARTS = (("Where", "where"), ("Left off", "left_off"), ("Decided", "deci
 _ACTORS = {Actor.OWNER: "You", Actor.ATLAS: "Atlas"}
 _NEVER_EMPTY = ("Resume Note", "Sessions", "History")
 _STEP = re.compile(r"^- \[(?P<state>[^\]]+)\] (?P<id>s-(?P<ymd>\d{8})-\d+) · (?P<statement>.*)$")
-_MEMBER = re.compile(r'^- (?P<at>\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · (?P<label>[^·]+) · (?P<title>".*") · (?P<id>\S+)$')
+_MEMBER = re.compile(r'^- (?P<at>\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?) · (?P<label>[^·]+) · (?P<title>".*") · (?P<id>\S+)$')
 _REOPEN = re.compile(r'^- (?P<label>.+?) (?P<title>".*") · (?P<day>\d{4}-\d{2}-\d{2}) · (?P<id>\S+)$')
 _HISTORY = re.compile(r"^- (?P<id>h-\d+) · (?P<at>\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · (?P<actor>[^·]+?) · (?P<statement>.*)$")
 
@@ -729,7 +739,7 @@ def _render_pursuit(pf: PursuitFile, tz: tzinfo | None) -> str:
         ("Next Step", "\n".join(_step_lines(p.next_step, marks)) if p.next_step else ""),
         ("Steps", "\n".join(line for s in p.past_steps for line in _step_lines(s, marks))),
         ("Filing rules", "\n".join(f"- {marks.render(f)}" for f in p.filing_rules)),
-        ("Sessions", "\n".join(f"- {_hm(local(m.at, tz))} · {ref[m.evidence].label} · {_q(ref[m.evidence].title)} · {m.evidence}"
+        ("Sessions", "\n".join(f"- {_hms(local(m.at, tz))} · {ref[m.evidence].label} · {_q(ref[m.evidence].title)} · {m.evidence}"
                                for m in p.sessions)),
         ("History", "\n".join(f"- {h.id} · {_hm(local(h.at, tz))} · {_actor(h)} · {marks.render(h.statement)}"
                               for h in p.history)),
@@ -798,7 +808,7 @@ def _parse_pursuit(text: str, tz: tzinfo | None) -> PursuitFile:
         m = _MEMBER.match(line)
         if not m:
             raise ValueError(f"unreadable Session line: {line!r}")
-        at = _read_hm(m["at"], tz)
+        at = _read_hms(m["at"], tz)
         refs[EvidenceId(m["id"])] = SessionRef(m["label"].strip(), json.loads(m["title"]), at.date())
         sessions.append(Membership(EvidenceId(m["id"]), at, m["id"] not in read_only))
     if not read_only <= {m.evidence for m in sessions}:

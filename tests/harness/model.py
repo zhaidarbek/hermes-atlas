@@ -37,7 +37,8 @@ def _respond(call: dict) -> dict:
 
 
 def _sessions(call: dict) -> dict[str, world.WorldSession]:
-    by_id = {seeds.evidence_id(s): s for s in (*world.SESSIONS, *world.WEB_SESSIONS)}
+    by_id = {seeds.evidence_id(s): s for s in (*world.SESSIONS, *world.WEB_SESSIONS, *world.EXPORTED[world.GPT],
+                                               *world.EXPORTED[world.CAI], world.SUNDAY_KNEE)}
     return {id: by_id[id] for id in _SESSION.findall(call["input"])}
 
 
@@ -87,6 +88,9 @@ def _file(call: dict) -> dict:
     out = {"intent": f"Work on {s.title}.", "outcome": f"Stopped after {s.minutes} minutes.", "pursuit": None,
            "new_pursuit": None, "one_off_area": None, "rule": None, "advances": True, "left_off": [],
            "step_done": None, "next_step": None, "kind": None, "ending": None}
+    if name not in listed and filed and filed.new:
+        kind, area = filed.new
+        return {**out, "new_pursuit": {"name": name, "kind": kind, "area": area}}
     if name not in listed:
         return {**out, "advances": False, "one_off_area": world.BACKFILL_ONE_OFFS.get(s.title, "work")}
     out["pursuit"] = listed[name]
@@ -94,7 +98,8 @@ def _file(call: dict) -> dict:
                  if "belong here" in text and _owner(call["input"], n) == listed[name]), None)
     out["rule"] = int(rule) if rule else None
     if filed and filed.left_off:
-        out["left_off"] = [{"text": filed.left_off, "quote": f"Done for now: {s.title}.", "sessions": [id]}]
+        quote = turns[filed.left_at] if filed.left_at else f"Done for now: {s.title}."
+        out["left_off"] = [{"text": filed.left_off, "quote": quote, "sessions": [id]}]
     if filed and filed.done_at:
         out["step_done"] = {"text": filed.done, "quote": turns[filed.done_at], "sessions": []}
     if filed and filed.next_step:

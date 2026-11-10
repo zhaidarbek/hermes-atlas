@@ -339,6 +339,8 @@ atlas.tick(now)
   rules.proposals(snapshot) also checks: a Focus slot is free / new and worth pushing
 ```
 
+What is built (#15): `sources.webchat` reads each settled `.zip` in the record's `inbox/` (unchanged for a minute, no link, regular file) in memory, only its `conversations.json` or `conversations-<n>.json` shards, with caps on the archive (2 GiB), its directory (100,000 entries and 8 MiB, read from the end record before `zipfile` reads it), each shard (256 MiB inflated, checked as it inflates), what json would build from the shards (1 GiB, bounded from their bytes, brackets, commas and colons as they inflate, before json builds anything) and the conversations (20,000). A time before 2015 or more than a day past the tick is no time; a conversation the record cannot hold (no time left, text it cannot write) is broken, and the file's other conversations and the other files go on. A tick reads at most 20 files. Each conversation is a Session whose raw copy is one line for the conversation and one per message of its branch; a later export adds the messages the copy lacks. The tick puts at most `IMPORT_BUDGET` (500) web-chat Sessions, 50 to a commit, then deletes each file whose every conversation the record holds or Forget keeps out, and notes each file in `.atlas/imports.json` (Harness, count, deleted or kept, failure type; no name or text). A kept file is read again only once it changes. `filing.queue` files a web-chat Session after the others, so an export of 2,000 conversations (4 ticks to import, 100 ticks of `filing.BUDGET` to file) never holds back today's Sessions or the brief. A Pursuit filing creates starts active or parked by backfill's rule (`rules.starting_status`: parked when its Session is more than 30 days old), so an imported years-old chat never starts a Neglected question. A Pursuit Atlas created in the last 7 days, untouched by the owner, active and outside Focus, that 3 Sessions of the last 30 days worked on, gets one `FocusProposal(add)` (`filing._offered`). The Settings line of a web chat says what its last export gave.
+
 ### 17. Focus proposal on the Board
 
 ```python
@@ -357,6 +359,8 @@ rebuild 2026-11-16 as the tick writes a day:
   correction line derived from the evidence diff: "Corrected Wed 18 Nov: added ChatGPT 19:10 (40 min) when your ChatGPT export arrived."
 ⇒ journal/2026-11-16.md
 ```
+
+What is built (#15): the tick passes the Sessions it filed to the Journal step. After writing the days since the newest one, it rewrites each earlier day the Journal has that those Sessions worked on (`corrections.late_days`) through the ChangeSet, keeping its lines, with `corrections.line` added: the day of the correction, then for each Session the day's Active Time now counts and its file did not, `added <Harness> <first time that day> (<the time it adds>)`, and ` when your <Harness> export arrived` for a web chat.
 
 ---
 

@@ -27,7 +27,7 @@ from enum import Enum
 from typing import Sequence
 from zoneinfo import ZoneInfo
 
-from .model import (Answer, Cite, Count, EvidenceId, Fact, Followup, Outcome, Pursuit, SentBrief, SentReview,
+from .model import (Answer, Cite, Count, EvidenceId, Fact, Followup, HarnessId, Outcome, Pursuit, SentBrief, SentReview,
                     Statement, harness_of)
 from .record import Snapshot
 
@@ -244,6 +244,8 @@ def _step_item(p: Pursuit, step_id: str, style: Style, now: datetime, snap: Snap
         lines.append(("Resume: ", Bare(_reworded(where, f"{harness.label} on {where.text}." if harness else f"{where.text}."))))
     elif p.resume.reopen and (session := _session_named(p, p.resume.reopen[0], snap)):
         lines.append(("Resume: ", Bare(session)))
+    elif snap is not None and (web := _web_chat(p, snap)) is not None:
+        lines.append(("Resume: ", Bare(web)))
     marked = item([line for _, line in lines], style, now)
     return [prefix + line for (prefix, _), line in zip(lines, marked)]
 
@@ -260,6 +262,20 @@ def _session_named(p: Pursuit, id: EvidenceId, snap: Snapshot) -> Fact | None:
     harness = harness_of(id)
     text = f'{harness.label if harness else ref.label}, Session "{ref.title}" ({ref.day:%a} {ref.day.day} {ref.day:%b}).'
     return Fact(text, Cite(id, ref.label, listed.at))
+
+
+def _web_chat(p: Pursuit, snap: Snapshot) -> Fact | None:
+    """Where to resume a Pursuit last worked in a web chat, which has no folder: the Session by
+    its title and day."""
+    if not p.sessions:
+        return None
+    last = max(p.sessions, key=lambda m: m.at)
+    harness = harness_of(last.evidence)
+    if harness not in (HarnessId.CHATGPT, HarnessId.CLAUDE_AI):
+        return None
+    ref = snap.session_ref(last.evidence)
+    return Fact(f'{harness.label}, Session "{ref.title}" ({ref.day:%a} {ref.day.day} {ref.day:%b}).',
+                Cite(last.evidence, harness.label, last.at))
 
 
 def _last(p: Pursuit, style: Style) -> list[str]:

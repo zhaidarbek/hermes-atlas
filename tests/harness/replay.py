@@ -36,12 +36,28 @@ def show(scene_id: str):
                   + (" · the brief, from the seed ===\n" if briefs else " ===\n"))
             if briefs:
                 print(said("Atlas", briefs[-1].text), "\n")
+        if printed["seed"]:
+            _imports(home)
         printed["seed"] = True
         for message in home.sent()[printed["sent"]:]:
             print(f"=== scene {scene_id} · {home.now:%a %d %b %H:%M} · the tick sends ===\n")
             print(said("Atlas", message["text"]), "\n")
         printed["sent"] = len(home.sent())
     return at_each_end
+
+
+def _imports(home: AtlasHome) -> None:
+    """The web-chat exports the ticks read, what is left in the inbox, and each Journal correction."""
+    snap = Record.open(home.record_root).snapshot()
+    for e in snap.imports():
+        what = "deleted it" if e.deleted else f"kept it ({e.failure})"
+        print(said("inbox", f"{e.at:%a %H:%M} read {e.sessions} {e.harness.label if e.harness else ''} Sessions, {what}"))
+    if snap.imports():
+        left = sorted(p.name for p in (home.record_root / "inbox").iterdir())
+        print(said("$ ls ~/atlas/inbox", " ".join(left) or "(empty)"), "\n")
+    for day in snap.journal_days():
+        for c in snap.journal(day).corrections:
+            print(said(f"journal/{day}", f"Corrected {c}"), "\n")
 
 
 def said(speaker: str, text: str) -> str:

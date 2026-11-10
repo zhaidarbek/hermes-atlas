@@ -916,24 +916,7 @@ class T3Code(_Store):
 
 ADAPTERS = {HarnessId.CLAUDE_CODE: ClaudeCode(), HarnessId.CODEX: Codex(), HarnessId.DEVIN: Devin(),
             HarnessId.HERMES: Hermes()}
-# ChatGPT and claude.ai are export-mode Sources served by import_inbox below.
-# test_every_harness_has_a_source: set(HarnessId) == set(ADAPTERS) | {CHATGPT, CLAUDE_AI}
-
-
-def import_inbox(inbox) -> tuple[list[NativeSession], list[object]]:
-    """UNVERIFIED seam: ChatGPT and claude.ai export formats are parser-derived, not documented.
-    Version tolerant: read every conversations*.json (honour export_manifest.json shards; the
-    same id may appear in several shards); key = (service, conversation id); upsert. Never
-    ingest group_chats.json (other people's messages). claude.ai branching unknown -> array
-    order. A conversation missing from a later full export is NOT removed (the owner deleted it
-    in the service; Atlas keeps its copy unless told to Forget, D Q14).
-    ChatGPT messages with create_time null (D Q6): their Turn.at is what activetime.undated gives
-    them on their conversation branch, and at=None, which adds no Active Time, where it gives
-    none. Interpolation is a fixed rule, so the resulting time is still a counted Fact (D Q9);
-    `Turn.at_interpolated` records it.
-    Returns per-file ImportOutcome; sources.release deletes a file only when every conversation in
-    it was committed (D Q5), and the outcome is reported on the Board and in the Review."""
-    raise NotImplementedError
+# ChatGPT and claude.ai are export-mode Sources, read from the inbox by sources/_webchat.py.
 
 
 def linked(root: Path | str, harness: str | None = None) -> bool:

@@ -71,6 +71,7 @@ class _Card:
     decided: str | None = None
     open_question: str | None = None
     reopen: tuple[str, ...] = ()              # world Session titles; default the latest Session
+    split_from: str | None = None             # the Pursuit the owner's split took it out of
 
 
 AFTER_SCENE_6 = (
@@ -93,7 +94,7 @@ AFTER_SCENE_6 = (
           "Decide between a paper chart and a tablet app.", "ubuntu-pc, ~/family/reading", focus=True),
     _Card("p-9m3c", "Billing export: staging deploy", Kind.PROJECT, "work", ("staging deploy env vars",),
           "The staging deploy reads its settings from env vars.", "Rotate the staging database password.",
-          "ubuntu-pc, ~/work/billing-export, branch deploy-staging"),
+          "ubuntu-pc, ~/work/billing-export, branch deploy-staging", split_from="Billing export service"),
     _Card("p-7d1c", "Agent-tooling newsletter", Kind.IDEA, "work", ("newsletter issue topics",),
           "you drafted three issue topics.", "Write the first 200 words of issue one.", "ubuntu-pc, ~/writing/newsletter"),
     _Card("p-3b8e", "Bike route planner", Kind.EXPERIMENT, "home", ("gpx elevation smoothing", "gpx tunnel gaps"),
@@ -108,6 +109,12 @@ AFTER_SCENE_6 = (
           "ubuntu-pc, ~/code/kb-firmware, branch split-right", status=Status.PARKED,
           reopen=("right half drops", "qmk build")),
 )
+
+
+SPLIT_SAID_AT = datetime(2026, 11, 15, 20, 41, tzinfo=world.TZ)
+SPLIT_SAID = Note(EvidenceId("nt-5p1i7s0t"), SPLIT_SAID_AT, NoteOrigin.OWNER, "telegram",
+                  "split the staging deploy chores out of Billing export service")
+"""Sunday's split (scene 5), which made Billing export: staging deploy the owner's Pursuit."""
 
 
 def _label(s: world.WorldSession) -> str:
@@ -125,6 +132,10 @@ def _pursuit(card: _Card) -> Pursuit:
     ids = tuple(evidence_id(s) for s in sessions)
     history = [HistoryLine("h-0001", BACKFILLED, Actor.ATLAS,
                            Inference(f"Created from {len(ids)} Session{'s' if len(ids) > 1 else ''}", ids))]
+    if card.split_from:
+        history = [HistoryLine("h-0001", SPLIT_SAID_AT, Actor.OWNER, Fact(
+            f'Split out of "{card.split_from}" with {len(ids)} Session{"s" if len(ids) > 1 else ""}.',
+            Cite(SPLIT_SAID.id, "your Note", SPLIT_SAID_AT)))]
     if card.focus:
         star = _star(card)
         history.append(HistoryLine("h-0002", STARRED, Actor.OWNER,
@@ -155,6 +166,7 @@ def after_scene_6(root: Path, starred: bool = True) -> None:
     known = {evidence_id(s): _evidence(s) for s in world.SESSIONS}
     snap.session = known.__getitem__
     cs = snap.changes()
+    cs.append_note(SPLIT_SAID)
     for card in AFTER_SCENE_6:
         card = card if starred else replace(card, focus=False)
         cs.put_pursuit(_pursuit(card))
@@ -248,16 +260,17 @@ def _turns(s: world.WorldSession) -> tuple[Turn, ...]:
     return tuple(Turn("owner" if t.owner else "agent", t.at, t.text, "main") for t in s.turns())
 
 
-def monday_filed(root: Path) -> None:
+def monday_filed(root: Path, exports: bool = True) -> None:
     """Monday's Sessions filed as the tutorial's Journal shows them: three Pursuits, one one-off,
-    and the ChatGPT Session that Wednesday's export brought (#15). Collection has already put
-    the store Sessions in the record."""
+    and the ChatGPT Session that Wednesday's export brought (#15), or, before `exports`, the store
+    Sessions alone. Collection has already put the store Sessions in the record."""
     record = Record.open(root)
     snap = record.snapshot()
     cs = snap.changes()
-    for s in world.WEB_SESSIONS:
+    for s in world.WEB_SESSIONS if exports else ():
         cs.put_session(replace(_evidence(s), turns=_turns(s)), {})
-    record.commit(cs)
+    if not cs.is_empty():
+        record.commit(cs)
     cs = record.snapshot().changes()
     for title, area in world.MONDAY_ONE_OFFS.items():
         id = evidence_id(world.by_title(title))
@@ -265,6 +278,8 @@ def monday_filed(root: Path) -> None:
                                 Area(area), MONDAY))
     for name, (area, titles) in world.MONDAY_PURSUITS.items():
         sessions = [world.by_title(t) for t in titles]
+        if not exports and any(s.harness in world.EXPORTED for s in sessions):
+            continue
         ids = tuple(evidence_id(s) for s in sessions)
         cs.put_pursuit(Pursuit(
             id=PursuitId(MONDAY_IDS[name]), name=name, kind=Kind.PROJECT, area=Area(area), status=Status.ACTIVE,
@@ -756,7 +771,6 @@ def keyboard_parked(root: Path) -> None:
                                          open_questions=(Inference(text("question"), basis),)),
                        next_step=replace(p.next_step, text=Inference(text("Step"), basis)))
     _changed(root, "p-1k2f", resumed)
-SPLIT_SAID_AT = datetime(2026, 11, 15, 20, 41, tzinfo=world.TZ)
 
 
 def after_scene_5_split(root: Path) -> None:
@@ -765,15 +779,13 @@ def after_scene_5_split(root: Path) -> None:
     after_scene_6(root)
     record = Record.open(root)
     snap = _lent(record)
-    said = Note(EvidenceId("nt-5p1i7s0t"), SPLIT_SAID_AT, NoteOrigin.OWNER, "telegram",
-                "split the staging deploy chores out of Billing export service")
-    cite = Cite(said.id, "your Note", SPLIT_SAID_AT)
+    cite = Cite(SPLIT_SAID.id, "your Note", SPLIT_SAID_AT)
     staging, billing = snap.pursuit(STAGING), snap.pursuit(BILLING)
     staging = replace(staging, filing_rules=(
         Fact(f'Staging deploy chores belong here, not in "{billing.name}".', cite),))
     billing = replace(billing, filing_rules=(
         Fact(f'Staging deploy chores belong in "{staging.name}", not here.', cite),))
-    record.commit(snap.changes().append_note(said).put_pursuit(staging).put_pursuit(billing))
+    record.commit(snap.changes().put_pursuit(staging).put_pursuit(billing))
 
 
 def collecting(seed):
@@ -786,3 +798,48 @@ def collecting(seed):
         record.commit(snap.changes().put_settings(replace(snap.settings(), harnesses={
             **AFTER_SETUP.harnesses, **snap.settings().harnesses}, interfaces=AFTER_SETUP.interfaces)))
     return seeded
+
+
+# ------------------------------------------------------------------ web-chat exports (scenes 16, 18, 35)
+
+WEB_CHATS = {h: HarnessSetting(True, "export", ("~/atlas/inbox",), "owner") for h in (world.GPT, world.CAI)}
+SUNDAY_BRIEF_ID = "8850"
+
+
+def web_chats_added(seed):
+    """`seed`, with ChatGPT and claude.ai added in Settings (scene 2) and no store Harness to read,
+    so a tick reads the inbox alone."""
+    def seeded(root: Path) -> None:
+        seed(root)
+        record = Record.open(root)
+        snap = record.snapshot()
+        record.commit(snap.changes().put_settings(replace(snap.settings(), harnesses=dict(WEB_CHATS))))
+    return seeded
+
+
+def monday_before_exports(root: Path) -> None:
+    """Monday's store Sessions held and filed as the tutorial's Journal shows them, before
+    Wednesday's exports bring the ChatGPT one."""
+    after_scene_1(root)
+    _hold(root, [s for s in world.SESSIONS if s.is_owner_session and s.start.date() == MONDAY])
+    monday_filed(root, exports=False)
+
+
+def sunday_knee_offered(root: Path) -> None:
+    """Sunday's brief, sent as message 8850, offering the Knee rehab plan's Step as Step 1, and
+    the keyboard firmware Session Sunday morning filed, so Sunday's Journal day has a file once it
+    closes."""
+    after_scene_25(root)
+    debounce = world.by_title("keyboard debounce 10 ms")
+    _hold(root, [debounce])
+    _changed(root, "p-1k2f", lambda p: replace(p, sessions=(
+        *p.sessions, Membership(evidence_id(debounce), debounce.end, True))))
+    record = Record.open(root)
+    snap = record.snapshot()
+    knee = snap.pursuit(KNEE)
+    sunday = world.SUNDAY_PROMPT_AT.replace(hour=7, minute=30)
+    brief = SentBrief(
+        day=sunday.date(), attempts=(SendAttempt(sunday, SendStatus.SENT, (SUNDAY_BRIEF_ID,), chat=HOME_CHAT),),
+        follows_up=world.FRIDAY_BRIEF_AT.date(), followups=(), steps=(BriefStep(1, knee.id, knee.next_step.id),),
+        decision=None, no_focus_yet=False, text=tutorial.fenced_block("YESTERDAY'S STEPS (from Friday)"))
+    record.commit(snap.changes().put_brief(brief))
