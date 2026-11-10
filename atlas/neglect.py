@@ -23,7 +23,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Mapping, Sequence
 
-from . import rules
+from . import pausing, rules
 from .model import (Actor, Count, DecisionAsk, EndingProposal, Fact, Followup, HistoryLine, OwnerMessage, Pause,
                     Pursuit, PursuitId, SendStatus, SentBrief, Status)
 from .record import Snapshot
@@ -118,7 +118,7 @@ def _held(p: Pursuit, today: date) -> bool:
 
 
 def _ask(snap: Snapshot, p: Pursuit, n: int, today: date) -> DecisionAsk:
-    return DecisionAsk(p.id, n, rules.clock_days(rules.quiet_since(p), today, snap.pauses(), snap.settings()))
+    return DecisionAsk(p.id, n, rules.clock_days(rules.quiet_since(p), today, pausing.kept(snap.pauses), snap.settings()))
 
 
 def parked(p: Pursuit, now: datetime) -> Pursuit:
@@ -158,7 +158,7 @@ def answer(snap: Snapshot, now: datetime) -> str:
     """The Pursuits Neglected today, then the owner's park, drop and continue decisions of the last
     seven days, and Atlas's parks by silence."""
     today = now.date()
-    s, pauses = snap.settings(), snap.pauses()
+    s, pauses = snap.settings(), pausing.kept(snap.pauses)
     quiet = rules.neglected(snap, today)
     lines = [f"{p.name} · {p.kind.value} · quiet {rules.clock_days(rules.quiet_since(p), today, pauses, s)} days [F]"
              for p in quiet] if quiet else ["Nothing is Neglected today. [F]"]
@@ -190,5 +190,5 @@ def _when(at: datetime, now: datetime) -> str:
 
 def _was_neglected(snap: Snapshot, p: Pursuit, day: date) -> bool:
     before = replace(p, continued=None)
-    return not p.focus and rules.clock_days(rules.quiet_since(before), day, snap.pauses(),
+    return not p.focus and rules.clock_days(rules.quiet_since(before), day, pausing.kept(snap.pauses),
                                             snap.settings()) >= rules.NEGLECTED_AFTER

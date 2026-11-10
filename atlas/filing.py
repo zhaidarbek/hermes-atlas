@@ -122,7 +122,7 @@ def _filed(p: Pursuit, f: Filing, s: SessionEvidence, now: datetime, today) -> P
         q = replace(q, next_step=None, past_steps=(*q.past_steps, done))
         lines.append(Fact("Marked the Step done from your Session.", seen.basis.source))
     if f.advances and f.next_step is not None and (q.next_step is None or q.next_step.ended is not None):
-        q = replace(q, next_step=Step(_step_id(q, today), f.next_step, today))
+        q = replace(q, next_step=Step(rules.step_id(q, today), f.next_step, today))
     if f.kind_change is not None and f.kind_change[0] is not q.kind:
         kind, reason = f.kind_change
         lines.append(Inference(f"{rules.KIND_CHANGED} {q.kind.value} to {kind.value}: {reason.text}", reason.basis))
@@ -165,11 +165,6 @@ def _history(p: Pursuit, lines: Sequence[Statement], now: datetime) -> Pursuit:
     for statement in lines:
         p = replace(p, history=(*p.history, HistoryLine(rules._next_history_id(p), now, Actor.ATLAS, statement)))
     return p
-
-
-def _step_id(p: Pursuit, today) -> StepId:
-    taken = {st.id for st in (p.next_step, *p.past_steps) if st is not None}
-    return next(StepId(f"s-{today:%Y%m%d}-{n}") for n in range(1, len(taken) + 2) if f"s-{today:%Y%m%d}-{n}" not in taken)
 
 
 def _card(snap: Snapshot, id: EvidenceId):

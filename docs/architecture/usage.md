@@ -440,7 +440,7 @@ The status to forward names the Pursuit in the owner's own words ("Billing expor
 
 ### 26. "skip 2, not today"
 
-`[MarkStep(knee step, skipped, by=word)]` ⇒ skip counts toward the three-in-a-row Focus removal rule. Reply `Knee rehab plan: Step skipped.`
+`[MarkStep(knee step, skipped, by=word)]` ⇒ skip counts toward the three-in-a-row Focus removal rule. Reply `Knee rehab plan: Step skipped.` When the skip leaves the Pursuit with no next Step, the same action comes back as a new Step (same text, its own id, created at the skip, no offers yet), so the next brief offers it again (scene 34). A Step skipped by silence does not come back.
 
 ### 27. Read the record with Hermes stopped
 
@@ -514,12 +514,13 @@ atlas.act(SetStatus(staging_deploy, parked), Owner(via="board", note=nt-…))
 `atlas, pause until sunday morning, we're at my parents'`
 
 ```python
-converse.interpret → [Pause(until=Sun 22 Nov 07:00)]        # no end given → +7 days, stated in the reply
-rules.decide ⇒ pauses.md += "- from 2026-11-20 16:40 until 2026-11-22 07:00 (you said: until sunday morning)"
+converse.interpret → [PauseCmd(until=Sun 22 Nov 07:00, said="until sunday morning, we're at my parents'")]
+                                                             # no end given → until=None → +7 days, stated in the reply
+rules.converse ⇒ pauses.md += {start: 2026-11-20T16:40+01:00, end: 2026-11-22T07:00+01:00, said: "..."}   # record-layout.md
 → Reply("Paused until Sun 22 Nov 07:00. No Daily Brief on Saturday, and no Pursuit becomes Neglected while Atlas is paused. ...")
 ```
 
-Nothing touches the Hermes cron job. A resumed Hermes job would fire its elapsed slot (hermes-how.md), so the tick itself checks the Pause.
+Nothing touches the Hermes cron job. A resumed Hermes job would fire its elapsed slot (hermes-how.md), so the tick itself checks the Pause: `schedule.due` returns nothing while paused, and `rules.compose_daily` checks `rules.paused` again when it plans the send. `atlas.pausing` reads the end: after "until", a weekday, "tomorrow" or a date, each with an optional part of the day ("morning" is 07:00, "evening" 18:00) or a time, or a time alone; after "for", days or weeks. A day with no time ends at its start, so that day's brief comes. A bare hour ("till 5") already gone today is the evening hour when that is still ahead. An end Atlas cannot read leaves the message to Hermes's agent, and so do words after "pause" that end in a question mark or open with a word of `converse.TAKE_BACK` ("no", "not", "don't", "never mind", "actually", "wait", "cancel"). A Pause that ends after a day's brief time sends that day's brief when it ends (`pausing.brief_from`, which `schedule.due` uses), and the reply names that moment. An unreadable `pauses.md`, or a Pause in it longer than `pausing.LONGEST` (366 days), reads as no Pause, with one log line. "pause" while paused ends the running Pause at that minute and starts the new one, so the record keeps both sets of words. "I'm back", "back", "unpause", "end the pause" or "resume" ends the running Pause at that minute (`EndPause`); the reply says when the next brief comes, and the brief is due again at once if its time has passed today.
 
 ---
 
@@ -534,7 +535,7 @@ rules.clock_days(...) never counts Saturday: a day counts on a clock only if no 
 
 ### 34. Sunday: follow-up from Friday
 
-`compose_daily(Sun)`: `prev = last sent brief` = Friday (Saturday has no file) → header `YESTERDAY'S STEPS (from Friday)`. Billing `DONE_SEEN` (Claude Code Fri 09:15), knee `SKIPPED_BY_WORD`. Steps: knee (Resume line names the ChatGPT Session) and reading tracker.
+`compose_daily(Sun)`: `prev = last sent brief` = Friday (Saturday has no file) → header `YESTERDAY'S STEPS (from Friday)`. Billing `DONE_SEEN` (Claude Code Fri 09:15), knee `SKIPPED_BY_WORD`. Steps: knee (the new Step the skip left, scene 26; Resume line names the ChatGPT Session) and reading tracker. A Resume Note with no `where`, as a web chat's, resumes in its first Session to reopen: `Resume: ChatGPT, Session "knee weeks 1 and 2" (Mon 16 Nov). [F]`.
 
 ### 35. claude.ai resume that needs the owner's word
 

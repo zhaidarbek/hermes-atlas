@@ -1,4 +1,5 @@
 # Scenes this branch proves, by the ids in docs/architecture/atlas-v1.md §1.
 # CI fails when a claimed scene fails, so a scene, once claimed, stays passing.
 claimed = ["1", "2", "3a", "3b", "3c", "4", "5", "6", "7", "8", "9", "9b", "10", "11", "13", "14", "15", "17", "19",
-           "20", "20b", "21", "22", "24", "25", "26", "27", "28", "29", "30", "31", "37", "38", "39"]
+           "20", "20b", "21", "22", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "37", "38",
+           "39"]

@@ -150,7 +150,7 @@ def brief(b: SentBrief, snap: Snapshot, style: Style) -> str:
     steps = ["STEPS (no Focus picked yet)" if b.no_focus_yet else "STEPS"]
     for s in b.steps:
         p = pursuits[s.pursuit]
-        text, *rest = _step_item(p, s.step, style, now)
+        text, *rest = _step_item(p, s.step, style, now, snap)
         head = [f"{s.n} · {p.name}", f"    {text}"] if first else [f"{s.n} · {p.name:<{width}}  {text}"]
         steps += [*head, *(f"    {line}" for line in rest)]
     steps += ["", f"    {prompt_hint(len(b.steps))}"] if b.steps else ["    Nothing today."]
@@ -231,7 +231,9 @@ def _decided_by(p: Pursuit, said: Cite) -> Statement | None:
                  and d.source.evidence == said.evidence), None)
 
 
-def _step_item(p: Pursuit, step_id: str, style: Style, now: datetime) -> list[str]:
+def _step_item(p: Pursuit, step_id: str, style: Style, now: datetime, snap: Snapshot) -> list[str]:
+    """A Resume Note with no place to work in, as for a web chat, resumes in its first Session to
+    reopen: 'Resume: ChatGPT, Session "knee weeks 1 and 2" (Mon 16 Nov). [F]'."""
     step = next(s for s in (p.next_step, *p.past_steps) if s is not None and s.id == step_id)
     lines: list[tuple[str, Statement | Bare]] = [("", step.text)]
     if p.resume.left_off:
@@ -240,8 +242,24 @@ def _step_item(p: Pursuit, step_id: str, style: Style, now: datetime) -> list[st
         where = p.resume.where[0]
         harness = harness_of(where.source.evidence) if isinstance(where, Fact) and isinstance(where.source, Cite) else None
         lines.append(("Resume: ", Bare(_reworded(where, f"{harness.label} on {where.text}." if harness else f"{where.text}."))))
+    elif p.resume.reopen and (session := _session_named(p, p.resume.reopen[0], snap)):
+        lines.append(("Resume: ", Bare(session)))
     marked = item([line for _, line in lines], style, now)
     return [prefix + line for (prefix, _), line in zip(lines, marked)]
+
+
+def _session_named(p: Pursuit, id: EvidenceId, snap: Snapshot) -> Fact | None:
+    """The Session as the Pursuit lists it, a record Fact."""
+    listed = next((m for m in p.sessions if m.evidence == id), None)
+    if listed is None:
+        return None
+    try:
+        ref = snap.session_ref(id)
+    except KeyError:
+        return None
+    harness = harness_of(id)
+    text = f'{harness.label if harness else ref.label}, Session "{ref.title}" ({ref.day:%a} {ref.day.day} {ref.day:%b}).'
+    return Fact(text, Cite(id, ref.label, listed.at))
 
 
 def _last(p: Pursuit, style: Style) -> list[str]:

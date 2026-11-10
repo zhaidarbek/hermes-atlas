@@ -35,6 +35,9 @@ NEGLECTED_AT = datetime(2026, 11, 19, 12, 5, tzinfo=TZ)    # "atlas, what have I
 FRIDAY_BRIEF_AT = datetime(2026, 11, 20, 7, 30, tzinfo=TZ)
 SKIP_AT = datetime(2026, 11, 20, 9, 45, tzinfo=TZ)         # "skip 2, not today", after the 09:15 billing Step
 FORGET_AT = datetime(2026, 11, 20, 13, 5, tzinfo=TZ)       # "atlas, forget the Codex Session from Thu 19 Nov 14:02"
+PAUSE_AT = datetime(2026, 11, 20, 16, 40, tzinfo=TZ)       # "atlas, pause until sunday morning", before leaving
+SATURDAY_AT = datetime(2026, 11, 21, 7, 30, tzinfo=TZ)     # the paused Saturday's brief time
+SUNDAY_BRIEF_AT = datetime(2026, 11, 22, 7, 30, tzinfo=TZ)
 HAND_EDIT_AT = datetime(2026, 11, 20, 8, 47, tzinfo=TZ)     # profile.md edited by hand before the 08:50 tick
 PROFILE_AT = datetime(2026, 11, 20, 13, 2, tzinfo=TZ)      # "atlas, profile: ...", once Hermes is back after lunch
 FIND_AT = datetime(2026, 11, 19, 12, 10, tzinfo=TZ)        # Thursday's questions: find the GPX Session (scene 22)
@@ -257,7 +260,7 @@ TICK_FILINGS: dict[str, TickFiling] = {
         ending=("done", "The flake is gone in 50 of 50 runs, which is what this Pursuit was for.")),
     "flake fix merged": TickFiling("Payments CI flakes"),
     "staging deploy config": TickFiling("Billing export: staging deploy"),
-    "greenhouse evening check": TickFiling("Greenhouse logger"),
+    "greenhouse evening check": TickFiling("Greenhouse logger", done_at="21:08", done="the logger writes every 5 minutes"),
     "keyboard debounce 10 ms": TickFiling("Keyboard firmware"),
 }
 

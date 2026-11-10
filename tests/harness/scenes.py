@@ -17,7 +17,7 @@ import sys
 import tempfile
 import tomllib
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -498,9 +498,13 @@ def _skip_by_word(home: AtlasHome) -> None:
     (_, said), (_, answer) = tutorial.exchange("skip 2, not today")
     expect_all_lines(answer, _reply_once(home, said, seeds.FRIDAY_BRIEF_ID))
     knee = Record.open(home.record_root).snapshot().pursuit(seeds.KNEE)
-    ended = knee.past_steps[-1].ended if knee.past_steps else None
-    if knee.next_step is not None or not isinstance(ended, Skipped) or ended.how != "word":
+    skipped = knee.past_steps[-1] if knee.past_steps else None
+    ended = skipped.ended if skipped else None
+    if not isinstance(ended, Skipped) or ended.how != "word":
         raise Failed(f"the Knee rehab plan Step is {knee.next_step or ended}, not skipped by your word")
+    again = knee.next_step
+    if again is None or again.id == skipped.id or again.text != skipped.text or again.ended is not None:
+        raise Failed(f"the skipped Step did not come back as a new Step in the same words: {again}")
     if rules.skipped_in_a_row(knee) != 1:
         raise Failed("the skip does not count toward the three skips in a row")
 
@@ -584,6 +588,107 @@ def _held_step_first(home: AtlasHome) -> None:
         p = snap.pursuit(id)
         if p.next_step is None or p.next_step.ended is not None or rules.offers(snap, id, p.next_step) != 1:
             raise Failed(f"{p.name}'s Step is not open with one offer, to be offered once more")
+# ------------------------------------------------------------------ scenes 32, 33, 34: the Pause
+
+def _no_cron(home: AtlasHome) -> None:
+    calls = [c for c in home.hermes_calls() if c[:1] == ["cron"]]
+    if calls:
+        raise Failed(f"Atlas called hermes {' '.join(calls[0])}: a Pause never touches the Hermes cron job")
+
+
+def _pause(home: AtlasHome) -> None:
+    (_, said), (_, answer) = tutorial.exchange(seeds.PAUSE_SAID)
+    reply = home.telegram(said)
+    if reply is None or " ".join(reply.split()) != " ".join(answer.split()):
+        raise Failed(f"Atlas answered {reply!r}, not the tutorial's {answer!r}")
+    before = home.files()
+    if home.telegram(said, message_id=home.last_message_id) != reply or home.files() != before:
+        raise Failed("a redelivered pause got another reply or changed the record")
+    if home.telegram(said, sender="5550002", chat="5550002") is not None or home.files() != before:
+        raise Failed("a stranger's pause reached Atlas")
+    snap = Record.open(home.record_root).snapshot()
+    kept = [(p.start, p.end, p.said) for p in snap.pauses()]
+    if kept != [(world.PAUSE_AT, datetime(2026, 11, 22, 7, 0, tzinfo=world.TZ), seeds.PAUSE_SAID.removeprefix("pause "))]:
+        raise Failed(f"pauses.md holds {kept}, not Friday 16:40 to Sunday 07:00 in your words")
+    _no_cron(home)
+
+
+SATURDAY_TICKS = (time(7, 30), time(12, 0), time(18, 0), time(23, 50))
+
+
+def _filed_then_paused(home: AtlasHome) -> None:
+    """Friday after the skip, with the week's Sessions collected and filed by ticks before 16:40,
+    then paused."""
+    seeds.collecting(seeds.after_scene_26)(home.record_root)
+    home.set_clock(world.PAUSE_AT - timedelta(minutes=10))
+    _tick_files(home, ticks=2)
+    seeds.pause(home.record_root)
+    home.set_clock(world.SATURDAY_AT)
+
+
+def _paused_saturday(home: AtlasHome) -> None:
+    friday = Record.open(home.record_root).snapshot()
+    for at in SATURDAY_TICKS:
+        home.set_clock(datetime.combine(world.SATURDAY_AT.date(), at, world.TZ))
+        snap = _tick_files(home)
+        if home.sent():
+            raise Failed(f"a tick sent a message by {at:%H:%M} on the paused Saturday")
+    if snap.brief(world.SATURDAY_AT.date()) is not None:
+        raise Failed("Saturday has a brief file")
+    evening = seeds.evidence_id(world.by_title("greenhouse evening check"))
+    greenhouse = snap.pursuit(seeds.GREENHOUSE)
+    done = greenhouse.past_steps[-1].ended if greenhouse.past_steps else None
+    if evening not in {m.evidence for m in greenhouse.sessions} or not isinstance(done, Done) or (
+            done.basis.source.evidence != evening):
+        raise Failed("Saturday's ticks did not file Friday evening's Session and see the greenhouse Step done")
+    s, pauses = snap.settings(), snap.pauses()
+    friday_day = world.PAUSE_AT.date()
+    if rules.clock_days(friday_day, world.SATURDAY_AT.date(), pauses, s) != 0:
+        raise Failed("Saturday counts on a clock")
+    if rules.clock_days(friday_day, world.SUNDAY_BRIEF_AT.date(), pauses, s) != 1:
+        raise Failed("Sunday does not count on the clocks once the Pause ends")
+    for p in snap.pursuits():
+        if p.next_step is not None and rules.offers(snap, p.id, p.next_step) != rules.offers(friday, p.id, p.next_step):
+            raise Failed(f"{p.name}'s Step was offered while Atlas was paused")
+    _no_cron(home)
+
+
+def expect_sunday(text: str) -> None:
+    """Sunday's brief follows up Friday's. The tutorial lists Knee rehab plan, then Reading tracker;
+    the Step order rule (a held Step on its first offer, then the oldest Step) gives the reading
+    tracker's Step of Wednesday first. That order is an open owner decision (PR #128), so each Step
+    reads as the tutorial shows it and the order is the rule's."""
+    lines = tutorial.fenced_block("YESTERDAY'S STEPS (from Friday)").splitlines()
+    knee = next(n for n, line in enumerate(lines) if line.startswith("1 · Knee rehab plan"))
+    reading = next(n for n, line in enumerate(lines) if line.startswith("2 · Reading tracker"))
+    reordered = (lines[:knee] + [lines[reading].replace("2 ·", "1 ·")] + [lines[knee].replace("1 ·", "2 ·")]
+                 + lines[knee + 1:reading] + lines[reading + 1:])
+    head, _, body = text.partition("\n")
+    if head != "Atlas · Daily Brief · Sunday 22 November":
+        raise Failed(f"the brief opens with {head!r}")
+    out = body.splitlines()
+    first = next(n for n, line in enumerate(out) if line.startswith("1 · "))
+    second = next(n for n, line in enumerate(out) if line.startswith("2 · "))
+    if not out[first].startswith("1 · Reading tracker") or not any(
+            line.strip().startswith("Left off: ") for line in out[first + 1:second]):
+        raise Failed(f"the brief's first Step is {out[first]!r}, with no Left off line")
+    expect_all_lines("\n".join(reordered), "\n".join(out[:first + 1] + out[second:]))
+
+
+def _sunday_follow_up(home: AtlasHome) -> None:
+    ran = home.cli("atlas", "tick", "--quiet")
+    if ran.code != 0 or ran.out:
+        raise Failed(f"hermes atlas tick --quiet exited {ran.code} and printed {ran.out!r}: {ran.err.strip()}")
+    sent = home.sent()
+    if len(sent) != 1:
+        raise Failed(f"the tick sent {len(sent)} messages, not one Daily Brief")
+    expect_sunday(sent[0]["text"])
+    kept = Record.open(home.record_root).snapshot().brief(home.now.date())
+    if kept.follows_up != world.PAUSE_AT.date() or [f.state for f in kept.followups] != ["done_seen", "skipped_word"]:
+        raise Failed(f"the brief follows up {kept.follows_up} as {[f.state for f in kept.followups]}")
+    _no_cron(home)
+
+
 # ------------------------------------------------------------------ scenes 9b, 10, 14, 15, 39: filing on the tick
 
 def _tick_files(home: AtlasHome, ticks: int = 1) -> Snapshot:
@@ -1193,6 +1298,9 @@ SCENES: dict[str, Scene] = {
     "22": Scene(world.FIND_AT, seed=lambda home: seeds.thursday(home.record_root), step=_find,
                 llm=lambda: FakeLlm({"atlas_answer": _gpx_answer})),
     "24": Scene(world.OUTSIDE_AT, seed=lambda home: seeds.thursday(home.record_root), step=_outside),
+    "32": Scene(world.PAUSE_AT, seed=lambda home: seeds.after_scene_26(home.record_root), step=_pause),
+    "33": Scene(world.SATURDAY_AT, seed=_filed_then_paused, step=_paused_saturday, llm=filing_model),
+    "34": Scene(world.SUNDAY_BRIEF_AT, seed=lambda home: seeds.after_scene_33(home.record_root), step=_sunday_follow_up),
     "37": Scene(world.WEEK_TIME_AT, seed=lambda home: seeds.sunday_evening(home.record_root), step=_week_time),
     "38": Scene(world.RESUME_AT, seed=lambda home: seeds.keyboard_parked(home.record_root), step=_resume_parked),
 }

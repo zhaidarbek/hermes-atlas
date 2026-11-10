@@ -15,12 +15,14 @@ Two tiers:
 
 Any reply other than "forget" while a ForgetPlan is pending cancels it first (W Q16).
 
-Built so far: the grammar for "<n> prompt", "<n> done [detail]", "skip <n> [detail]" (and "<n>
-skip"), "<n> remind me <weekday>", and "park|drop|continue <words naming one Pursuit>" ("continue"
-only for an active or parked one), a bare "park|drop|continue [it|that]" for the brief's decision
-question or, with none asked, the one park by silence, "remind me <weekday> [about <words>]" for the
-decision question, "close it" (the ending the brief proposed); and the questions:
-"what have I neglected?" (NeglectedQ), "find the conversation where <words>" (FindQ),
+Built so far: "pause [until <end> | for <days>][, <words>]" (PauseCmd, its end read by
+atlas.pausing) and "I'm back" (EndPause), each the whole message; the grammar for "<n> prompt", "<n>
+done [detail]", "skip <n> [detail]" (and "<n> skip"), "<n> remind me <weekday>", and
+"park|drop|continue <words naming one Pursuit>" ("continue" only for an active or parked one), a bare
+"park|drop|continue [it|that]" for the brief's decision question or, with none asked, the one park by
+silence, "remind me <weekday> [about <words>]" for the decision question, "close it" (the ending the
+brief proposed); and the questions: "what have I neglected?" (NeglectedQ), "find the conversation
+where <words>" (FindQ),
 "send|tell|email|message <someone> <words>" in a message addressed to Atlas by name (OutsideAction,
 always refused), "how long did I work
 this|last week[, by Area]" (PeriodTimeQ), "where did I leave off on <words naming one Pursuit>"
@@ -45,12 +47,13 @@ from datetime import date, timedelta
 from typing import Callable, Sequence, get_args
 from zoneinfo import ZoneInfo
 
-from . import forget, neglect
+from . import forget, neglect, pausing
 from .librarian import CONVERSE, Librarian, Llm, ModelError, ask
 from .messages import RESUME_HINT
-from .model import (AddArea, ApplyNote, Area, BriefStep, Command, Continue, EndingProposal, FindQ, HoldDecision,
-                    HoldStep, MarkStep, Merge, NeglectedQ, NoteOrigin, OutsideAction, OwnerMessage, PeriodTimeQ, Pursuit,
-                    Query, ResumePromptQ, ResumeQ, SendStatus, SentBrief, SetArea, SetStatus, Split, Status, WhichQ)
+from .model import (AddArea, ApplyNote, Area, BriefStep, Command, Continue, EndingProposal, EndPause, FindQ,
+                    HoldDecision, HoldStep, MarkStep, Merge, NeglectedQ, NoteOrigin, OutsideAction, OwnerMessage,
+                    PauseCmd, PeriodTimeQ, Pursuit, Query, ResumePromptQ, ResumeQ, SendStatus, SentBrief, SetArea,
+                    SetStatus, Split, Status, WhichQ)
 from .record import Snapshot
 
 UNREAD = "UNREAD"
@@ -78,7 +81,7 @@ def interpret(msg: OwnerMessage, snap: Snapshot, librarian: Librarian | None) ->
 
 
 def _read(msg: OwnerMessage, snap: Snapshot, librarian: Librarian | None) -> Interpretation:
-    whole = _whole(msg.text, snap, librarian)
+    whole = _paused(msg, snap) or _whole(msg.text, snap, librarian)
     if whole is not None:
         return whole
     said = _grammar(msg, snap)
@@ -132,6 +135,37 @@ def _whole(text: str, snap: Snapshot, librarian: Librarian | None) -> Interpreta
         return Interpretation((), (), False, UNREAD)
 
 
+def _paused(msg: OwnerMessage, snap: Snapshot) -> Interpretation | None:
+    """"pause", "pause until <end>" or "pause for <days>", then any words of the owner's own
+    ("pause until sunday morning, we're at my parents'"), and "I'm back". An end Atlas cannot read
+    leaves the message UNREAD, and so do words that ask about the Pause or take it back ("pause -
+    what does that do?", "pause. actually no"). None for any other message."""
+    text = " ".join(msg.text.split())
+    if _BACK.fullmatch(text):
+        return Interpretation((EndPause(),), (), False, None)
+    m = _PAUSE.fullmatch(text)
+    if m is None:
+        return None
+    if text.rstrip().endswith("?") or _TAKEN_BACK.match((m["tail"] or "").lstrip(" ,;:.!-")):
+        return Interpretation((), (), False, UNREAD)
+    said = m["said"].strip(" ,;:.!")
+    if m["until"] is None and m["for"] is None:
+        return Interpretation((PauseCmd(None, said),), (), False, None)
+    tz = ZoneInfo(snap.settings().timezone)
+    end = pausing.until(m["until"], msg.at, tz) if m["until"] else pausing.lasting(m["for"], msg.at)
+    if end is None:
+        return Interpretation((), (), False, UNREAD)
+    return Interpretation((PauseCmd(end, said),), (), False, None)
+
+
+_PAUSE = re.compile(r"pause(?:\s+atlas)?(?P<said>(?:\s+(?:until|till|til)\s+(?P<until>[^,;.!]+?)"
+                    r"|\s+for\s+(?P<for>[^,;.!]+?))?\s*(?:[,;:.!-]\s*(?P<tail>.*))?)", re.I | re.S)
+TAKE_BACK = ("no", "not", "don't", "dont", "do not", "never mind", "nevermind", "actually", "wait", "cancel",
+             "nope", "nah", "scratch that", "forget it", "kidding", "jk")
+"""Words that, opening what follows "pause", ask Atlas not to pause after all."""
+_TAKEN_BACK = re.compile(r"(?:%s)\b" % "|".join(re.escape(w).replace("'", "['’]") for w in TAKE_BACK), re.I)
+_BACK = re.compile(r"(?:(?:i'?m|i am|we'?re|we are)\s+back|back|unpause|end\s+(?:the\s+)?pause|stop\s+pausing"
+                   r"|come\s+back|resume)[.!]*", re.I)
 _APPLY = re.compile(r"apply[.!]?", re.I)
 _PROFILE = re.compile(r"profile\s*[:,-]?\s+(?P<words>\S.*)", re.I | re.S)
 

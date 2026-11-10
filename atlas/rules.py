@@ -18,16 +18,16 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
-from . import activetime, ask, messages, neglect
+from . import activetime, ask, messages, neglect, pausing
 from .activetime import TimedSession, Work
 from .librarian import Grouping, JournalLines, PursuitDraft
 from .model import (ONE_OFF, Actor, AddArea, Answer, ApplyNote, Area, Authority, BoardView, BriefStep, Card, Cite,
-                    Command, Continue, CorrectProfile, Coverage, DayTime, Done, EndingProposal, EvidenceId, Fact,
-                    FocusProposal, Followup, HistoryId, HistoryLine, HoldDecision, HoldStep, Inference, JournalDay,
-                    Librarian, MarkSeen, MarkStep, Merge, Note, NoteOrigin, OutsideAction, Outcome, Owner, OwnerMessage, Pause,
-                    Profile, ProfileEntry, Pursuit, PursuitId, Query, ResumePromptQ, ResumeQ, SendAttempt, SendStatus,
-                    SentBrief, SentRef, SentReview, SetArea, SetFocus, SetStatus, Settings, Skipped, Split, Status, Step,
-                    StepId, Who, cites, harness_of, resend)
+                    Command, Continue, CorrectProfile, Coverage, DayTime, Done, EndingProposal, EndPause, EvidenceId,
+                    Fact, FocusProposal, Followup, HistoryId, HistoryLine, HoldDecision, HoldStep, Inference,
+                    JournalDay, Librarian, MarkSeen, MarkStep, Merge, Note, NoteOrigin, OutsideAction, Outcome, Owner,
+                    OwnerMessage, Pause, PauseCmd, Profile, ProfileEntry, Pursuit, PursuitId, Query, ResumePromptQ,
+                    ResumeQ, SendAttempt, SendStatus, SentBrief, SentRef, SentReview, SetArea, SetFocus, SetStatus,
+                    Settings, Skipped, Split, Status, Step, StepId, Who, cites, harness_of, resend)
 from .record import ChangeSet, ForgetPlan, Snapshot
 
 log = logging.getLogger(__name__)
@@ -126,7 +126,8 @@ ACTIVE_AGAIN = "active again. Its quiet days count from today."
 
 def _mark_step(p: Pursuit, cmd: MarkStep, said: Cite) -> tuple[Pursuit, str]:
     """The owner's word settles a Step at once (W Q7). Done a second time, or skipped a second
-    time, changes nothing."""
+    time, changes nothing. A Step skipped by word that leaves no next Step comes back as a new
+    Step in the same words, so the next brief offers it again (scene 34)."""
     history, reply = STEP_SAID[cmd.outcome]
     basis = Fact(cmd.detail or "", said)
     end = Done("word", said.at, basis) if cmd.outcome == "done" else Skipped("word", said.at, basis)
@@ -136,12 +137,21 @@ def _mark_step(p: Pursuit, cmd: MarkStep, said: Cite) -> tuple[Pursuit, str]:
     ended = replace(steps[0], ended=end)
     if p.next_step is not None and p.next_step.id == cmd.step:
         p = replace(p, next_step=None, past_steps=(*p.past_steps, ended))
+        if cmd.outcome == "skipped":
+            day = said.at.date()
+            p = replace(p, next_step=Step(step_id(p, day), steps[0].text, day))
     else:
         p = replace(p, past_steps=tuple(ended if s.id == cmd.step else s for s in p.past_steps))
     picked = chosen(steps[0].text.text, cmd.detail) if cmd.outcome == "done" else None
     if picked:
         p = replace(p, resume=replace(p.resume, decided=(*p.resume.decided, Fact(picked, said))))
     return _noted(p, history, said), f"{p.name}: {reply}"
+
+
+def step_id(p: Pursuit, day: date) -> StepId:
+    """The first s-<day>-<n> no Step of the Pursuit holds."""
+    taken = {st.id for st in (p.next_step, *p.past_steps) if st is not None}
+    return next(StepId(f"s-{day:%Y%m%d}-{n}") for n in range(1, len(taken) + 2) if f"s-{day:%Y%m%d}-{n}" not in taken)
 
 
 def chosen(step: str, detail: str | None) -> str | None:
@@ -294,6 +304,7 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
         return Decision(snap.changes(), Outcome(False, (), refused))
     desk = _Desk(snap)
     profile = snap.profile() if any(isinstance(c, (CorrectProfile, ApplyNote)) for c in commands) else None
+    pauses = None
     kept: dict[EvidenceId, Note] = {}
     lines = []
     for cmd in commands:
@@ -307,7 +318,9 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
         else:
             said, changes = (who, note.at), (cmd,)
         for change in changes:
-            if isinstance(change, CorrectProfile):
+            if isinstance(change, (PauseCmd, EndPause)):
+                pauses, line = _pausing(snap, pauses, change, note.at, msg.at)
+            elif isinstance(change, CorrectProfile):
                 profile, line = _correct_profile(profile, change, Cite(said[0].note, "your Note", said[1]), note.at)
                 if line is None:
                     return Decision(snap.changes(), Outcome(False, (), "NO_SUCH_ENTRY"))
@@ -339,10 +352,23 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
         profile = replace(profile or snap.profile(), areas=desk.areas)
     if profile is not None and profile != snap.profile():
         cs.put_profile(profile)
+    if pauses is not None and pauses != pausing.kept(snap.pauses):
+        cs.put_pauses(pauses)
     for n in kept.values():
         cs.put_note(n)
     cs.append_note(replace(note, atlas_reply="\n".join(lines), about=about))
     return Decision(cs, Outcome(True, tuple(lines)))
+
+
+def _pausing(snap: Snapshot, pauses: tuple[Pause, ...] | None, cmd: PauseCmd | EndPause, start: datetime,
+             now: datetime) -> tuple[tuple[Pause, ...], str]:
+    """A Pause begins at the minute of the owner's Note, and "I'm back" ends it there. The Hermes
+    cron job is never touched (ADR 0006): the tick reads pauses.md."""
+    s, held = snap.settings(), pausing.kept(snap.pauses) if pauses is None else pauses
+    if isinstance(cmd, PauseCmd):
+        return pausing.pause(held, cmd, start, s)
+    briefed = snap.brief(now.astimezone(ZoneInfo(s.timezone)).date()) is not None
+    return pausing.end_pause(held, start, s, briefed)
 
 
 def _correct_profile(profile: Profile, cmd: CorrectProfile, said: Cite, now: datetime) -> tuple[Profile, str | None]:
@@ -523,7 +549,7 @@ def quiet_since(p: Pursuit) -> date:
 
 def neglected(snap: Snapshot, today: date) -> list[Pursuit]:
     """Active, not in Focus, clock_days(quiet_since) >= 14, quietest first. Derived, never stored."""
-    s, pauses = snap.settings(), snap.pauses()
+    s, pauses = snap.settings(), pausing.kept(snap.pauses)
     quiet = {p.id: clock_days(quiet_since(p), today, pauses, s)
              for p in snap.pursuits() if p.status is Status.ACTIVE and not p.focus}
     return sorted((p for p in snap.pursuits() if quiet.get(p.id, 0) >= NEGLECTED_AFTER),
@@ -565,6 +591,7 @@ def compose_daily(snap: Snapshot, now: datetime) -> Decision:
     come from the most recently active Pursuits instead, at most three, one per Pursuit, under the
     heading "no Focus picked yet"; SentBrief.no_focus_yet. This stops for good after the first pick.
     It is a stand-in, not a Focus proposal.
+    Nothing while paused: the Pause is checked again here, when the send is planned.
     Today's file already there: a second attempt with the same text when its delivery allows one
     (model.RESEND, D Q13), guarded by that file's seal; otherwise nothing. A new file's base
     'absent' is the guard against two ticks racing. The brief is planned from every Pursuit, so
@@ -578,7 +605,9 @@ def compose_daily(snap: Snapshot, now: datetime) -> Decision:
     # TODO pseudocode (#10):
     #   3rd skip in a row on a Focus Pursuit -> FocusProposal(remove)
     """
-    s = snap.settings()
+    s, pauses = snap.settings(), pausing.kept(snap.pauses)
+    if paused(pauses, now):
+        return Decision(snap.changes(), Outcome(True, ()))
     today = now.astimezone(ZoneInfo(s.timezone)).date()
     existing = snap.brief(today)
     if existing is not None:
@@ -608,7 +637,7 @@ def compose_daily(snap: Snapshot, now: datetime) -> Decision:
     pool = [p for p in pursuits if (p.focus if picked else p.status is Status.ACTIVE)
             and _offerable(p.next_step, today) and (p.id, p.next_step.id) not in resting]
     offered = sorted(pool, key=lambda p: _step_order(snap, p, today))[:MAX_STEPS]
-    ask, silenced = neglect.decision(snap, prev, {o.id for o in offered}, today, snap.pauses())
+    ask, silenced = neglect.decision(snap, prev, {o.id for o in offered}, today, pauses)
     if silenced is not None:
         cs.put_pursuit(neglect.parked(current[silenced], now))
     draft = SentBrief(

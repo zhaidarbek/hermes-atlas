@@ -573,7 +573,8 @@ def _offset(dt: datetime, tz: tzinfo | None) -> str:
 def _render_pauses(pauses: tuple[Pause, ...], tz: tzinfo | None) -> str:
     rows = [f"  - {{start: {_offset(p.start, tz)}, end: {_offset(p.end, tz)}, said: {_q(p.said)}}}" for p in pauses]
     front = ["atlas: pauses/1", "pauses:" + ("" if rows else " []"), *rows]
-    lines = [f"- {_when(local(p.start, tz))} to {_when(local(p.end, tz))}. You said: {_q(p.said)}." for p in pauses]
+    lines = [f"- {_when(local(p.start, tz))} to {_when(local(p.end, tz))}." + (f" You said: {_q(p.said)}." if p.said else "")
+             for p in pauses]
     return _document(front, "# Pauses\n" + ("\n" + "\n".join(lines) + "\n" if lines else ""))
 
 

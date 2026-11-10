@@ -306,7 +306,8 @@ KNEE_SESSION = SessionEvidence(KNEE_EXPORT, HarnessId.CHATGPT, None, LOCAL, "kne
 def _lent(record: Record):
     """A Snapshot lent the fixture world's Sessions, which collection has not written yet."""
     snap = record.snapshot()
-    known = {evidence_id(s): _evidence(s) for s in world.SESSIONS} | {KNEE_EXPORT: KNEE_SESSION}
+    known = {evidence_id(s): _evidence(s) for s in world.SESSIONS} | {KNEE_EXPORT: KNEE_SESSION,
+                                                                       BILLING_FRIDAY.id: BILLING_FRIDAY}
     snap.session = known.__getitem__
     return snap
 
@@ -510,6 +511,68 @@ def after_scene_24(root: Path) -> None:
     for p in (payments, backups, reading, greenhouse, knee):
         cs.put_pursuit(p)
     record.commit(cs.append_note(_knee_star()).put_brief(brief))
+
+
+# ------------------------------------------------------------------ Friday to Sunday (scenes 32, 33, 34)
+
+BILLING_DONE_AT = datetime(2026, 11, 20, 9, 15, tzinfo=world.TZ)
+BILLING_FRIDAY = SessionEvidence(_evidence_id(HarnessId.CLAUDE_CODE, LOCAL, "pdf-export-rerun"), HarnessId.CLAUDE_CODE,
+                                 None, LOCAL, "pdf-export-rerun", "pdf export rerun october",
+                                 datetime(2026, 11, 20, 8, 50, tzinfo=world.TZ), BILLING_DONE_AT,
+                                 world.MACHINE_IN_TUTORIAL, "~/work/billing-export", "pdf-vat", (), ())
+KNEE_LEFT_OFF = "exercises listed for weeks 1 and 2; week 3 not planned."
+PAUSE_SAID = "pause until sunday morning, we're at my parents'"
+
+
+def _told(record: Record, text: str, at: datetime) -> None:
+    """The owner writes to Atlas by name, read and decided by Atlas's own rules."""
+    snap = _lent(record)
+    msg = OwnerMessage(text, at, "telegram", HOME_CHAT, None, f"{OWNER}:{at:%H%M}", addressed=True)
+    read = converse.interpret(msg, snap, None)
+    record.commit(rules.converse(snap, msg, read.commands, read.asks).changes)
+
+
+def after_scene_26(root: Path) -> None:
+    """Friday after "skip 2, not today": scene 24's end, the knee's Resume Note citing its ChatGPT
+    Session, Friday's brief as compose_daily builds it, sent as message 8840, the billing Step seen
+    done in Claude Code at 09:15 with no Next Step yet, and the knee Step skipped by your word."""
+    after_scene_24(root)
+    record = Record.open(root)
+    snap = _lent(record)
+    knee = snap.pursuit(KNEE)
+    record.commit(snap.changes().put_pursuit(replace(knee, resume=replace(
+        knee.resume, left_off=(Fact(KNEE_LEFT_OFF, Cite(KNEE_EXPORT, "ChatGPT", KNEE_SESSION.last_at)),),
+        reopen=(KNEE_EXPORT,)))))
+    record.commit(rules.compose_daily(_lent(record), world.FRIDAY_BRIEF_AT).changes)
+    sent = SendAttempt(world.FRIDAY_BRIEF_AT, SendStatus.SENT, (FRIDAY_BRIEF_ID,), chat=HOME_CHAT)
+    record.commit(rules.settle_send(_lent(record), world.FRIDAY_BRIEF_AT.date(), sent).changes)
+    snap = _lent(record)
+    billing = snap.pursuit(BILLING)
+    done = replace(billing.next_step, ended=Done("seen", BILLING_DONE_AT,
+                                                 Fact("", Cite(BILLING_FRIDAY.id, "Claude Code", BILLING_DONE_AT))))
+    record.commit(snap.changes().put_pursuit(replace(
+        billing, next_step=None, past_steps=(*billing.past_steps, done),
+        sessions=(*billing.sessions, Membership(BILLING_FRIDAY.id, BILLING_DONE_AT, True)))))
+    _said(record, "skip 2, not today", world.SKIP_AT, "2026-11-20")
+
+
+def pause(root: Path) -> None:
+    """Atlas paused at 16:40 on Friday until Sunday 07:00 by your words."""
+    _told(Record.open(root), PAUSE_SAID, world.PAUSE_AT)
+
+
+def after_scene_33(root: Path) -> None:
+    """The paused Saturday's end: the greenhouse Step seen done in Friday evening's Session, which
+    Saturday's ticks filed."""
+    after_scene_26(root)
+    pause(root)
+    record = Record.open(root)
+    snap = _lent(record)
+    filed = world.TICK_FILINGS["greenhouse evening check"]
+    greenhouse = _seen(snap.pursuit(GREENHOUSE), "greenhouse evening check",
+                       datetime.combine(world.PAUSE_AT.date(), time.fromisoformat(filed.done_at), world.TZ), None,
+                       filed.done)
+    record.commit(snap.changes().put_pursuit(greenhouse))
 
 
 THURSDAY = date(2026, 11, 19)

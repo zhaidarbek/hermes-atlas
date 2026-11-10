@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Union
 from zoneinfo import ZoneInfo
 
-from . import _hermes, rules
+from . import _hermes, pausing, rules
 from .model import resend
 from .record import Snapshot
 
@@ -67,11 +67,13 @@ def due(snap: Snapshot, now: datetime) -> list[Due]:
     ISO week, with the same retry rule. Not built yet (#20)."""
     s = snap.settings()
     local = now.astimezone(ZoneInfo(s.timezone))
-    if rules.paused(snap.pauses(), now):
+    pauses = pausing.kept(snap.pauses)
+    if rules.paused(pauses, now):
         return []
     today = local.date()
     sent = snap.brief(today)
-    first = sent is None and local.time() >= s.brief_at
+    at = pausing.brief_from(today, pauses, s)
+    first = sent is None and at is not None and now >= at
     again = sent is not None and resend(sent.attempts)
     return [BriefDue(today)] if first or again else []
 
