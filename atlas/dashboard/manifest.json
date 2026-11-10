@@ -1,0 +1,14 @@
+{
+  "name": "atlas",
+  "label": "Atlas",
+  "description": "Your Pursuits by Status: star Focus, drag to change Status, copy a resume prompt; and Atlas's settings",
+  "icon": "Star",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/atlas",
+    "position": "end"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

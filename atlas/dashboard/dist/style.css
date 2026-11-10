@@ -1,0 +1,47 @@
+.atlas-tab { padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.atlas-board, .atlas-settings { display: flex; flex-direction: column; gap: 0.75rem; }
+.atlas-tabs { display: flex; gap: 1rem; border-bottom: 1px solid var(--border, #8884); }
+.atlas-tabs button { background: none; border: none; color: inherit; cursor: pointer; padding: 0 0 0.25rem; font: inherit; }
+.atlas-tabs .atlas-tab-on { font-weight: 600; border-bottom: 2px solid currentColor; }
+.atlas-tab-off { opacity: 0.7; }
+.atlas-columns { display: grid; grid-template-columns: repeat(4, minmax(14rem, 1fr)); gap: 0.75rem; align-items: start; }
+.atlas-column { min-height: 8rem; padding: 0.5rem; border-radius: 0.5rem; background: var(--muted, #8881); }
+.atlas-column h3 { font-size: 0.8rem; letter-spacing: 0.05em; margin: 0 0 0.5rem; opacity: 0.8; }
+.atlas-over { outline: 2px dashed currentColor; }
+.atlas-card { padding: 0.6rem; margin-bottom: 0.5rem; border-radius: 0.4rem; border: 1px solid var(--border, #8884);
+  background: var(--card, transparent); cursor: grab; display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; }
+.atlas-head { display: flex; align-items: center; gap: 0.4rem; }
+.atlas-name { font-weight: 600; flex: 1; }
+.atlas-star { background: none; border: none; cursor: pointer; font-size: 1.1rem; line-height: 1; padding: 0; }
+.atlas-mark { font-size: 0.7rem; font-weight: 700; padding: 0 0.3rem; border-radius: 0.2rem; border: 1px solid currentColor; }
+.atlas-proposal { font-style: italic; }
+.atlas-line { display: grid; grid-template-columns: 4.5rem 1fr; gap: 0.3rem; }
+.atlas-label { opacity: 0.7; }
+.atlas-badge { position: relative; display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 0 0.25rem;
+  border-radius: 0.2rem; border: 1px solid currentColor; cursor: help; }
+.atlas-pop { display: none; position: absolute; z-index: 10; left: 0; top: 1.2rem; min-width: 12rem; padding: 0.4rem;
+  border-radius: 0.3rem; background: var(--popover, #222); color: var(--popover-foreground, #eee); font-weight: 400;
+  flex-direction: column; gap: 0.2rem; }
+.atlas-badge:hover .atlas-pop, .atlas-badge:focus-within .atlas-pop { display: flex; }
+.atlas-pop a { color: inherit; text-decoration: underline; }
+.atlas-copy { align-self: flex-start; font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 0.3rem;
+  border: 1px solid var(--border, #8884); background: none; color: inherit; cursor: pointer; }
+.atlas-focus-count { font-weight: 600; }
+.atlas-error { color: var(--destructive, #c33); }
+.atlas-settings section { padding: 0.75rem; border-radius: 0.5rem; background: var(--muted, #8881);
+  display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.85rem; max-width: 48rem; }
+.atlas-settings h3 { font-size: 0.8rem; letter-spacing: 0.05em; margin: 0; opacity: 0.8; text-transform: uppercase; }
+.atlas-row { display: grid; grid-template-columns: 9rem 1fr; gap: 0.5rem; align-items: center; }
+.atlas-value { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.atlas-root { display: inline-flex; align-items: center; gap: 0.25rem; font-family: var(--font-mono, monospace); }
+.atlas-remove { background: none; border: none; color: inherit; cursor: pointer; opacity: 0.6; padding: 0 0.2rem; }
+.atlas-field { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+.atlas-field input, .atlas-field select { font: inherit; color: inherit; background: var(--background, transparent);
+  border: 1px solid var(--border, #8884); border-radius: 0.3rem; padding: 0.15rem 0.4rem; }
+.atlas-field input[type="text"], .atlas-field input:not([type]) { min-width: 16rem; }
+.atlas-field input[type="number"] { width: 4.5rem; }
+.atlas-field button, .atlas-buttons button { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 0.3rem;
+  border: 1px solid var(--border, #8884); background: none; color: inherit; cursor: pointer; }
+.atlas-buttons { display: flex; gap: 0.5rem; }
+.atlas-quiet { opacity: 0.7; margin: 0; }
+@media (max-width: 900px) { .atlas-columns { grid-template-columns: 1fr; } }

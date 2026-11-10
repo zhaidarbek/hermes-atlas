@@ -1,0 +1,13 @@
+manifest_version: 2
+name: atlas
+version: 0.1.0
+description: Keeps your Pursuits current across your AI Harnesses and pushes you to continue them.
+license: MIT
+homepage: https://github.com/zhaidarbek/hermes-atlas
+requires_hermes: ">=0.23.0"
+python_dependencies: ["zstandard>=0.22,<1", "mcp>=2.0,<3", "pyyaml>=6.0,<7"]
+provides_tools: [atlas_read, atlas_note, atlas_update]
+provides_hooks: [pre_gateway_dispatch, post_gateway_admission]
+provides_middleware: []
+requires_env: []
+config_schema: {record_dir: {type: str, description: "Folder for Atlas's record; default ~/atlas"}}
