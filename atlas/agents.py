@@ -130,10 +130,10 @@ def update(snap: Snapshot, who: Agent, asked: told.Asked, words: str, now: datet
 def _applied(snap: Snapshot, who: Agent, p: Pursuit, asked: told.Asked, cmd: EditResumeNote, message: str,
              now: datetime) -> Decision:
     said = Cite(_caller.session_id(who.session), who.session.harness.label, who.instruction.at)
-    edited, removed = rules.edit_resume(p, cmd, said)
+    edited, removed = rules.edit_resume(p, cmd, said, Actor.AGENT, who.session.harness.label)
     if removed is None:
         return Decision(snap.changes(), Outcome(False, ("The Open question to remove is no longer there.",), "STALE"))
-    history = HistoryLine(rules._next_history_id(p), now.replace(second=0, microsecond=0), Actor.AGENT,
+    history = HistoryLine(rules._next_history_id(edited), now.replace(second=0, microsecond=0), Actor.AGENT,
                           Fact(_on_your_words(message), said), agent=who.session.harness.label)
     edited = replace(edited, history=(*edited.history, history))
     return Decision(snap.changes().put_pursuit(edited), Outcome(True, (told.answer(p.name, asked, cmd),)))

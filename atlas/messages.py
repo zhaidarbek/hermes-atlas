@@ -27,7 +27,7 @@ from enum import Enum
 from typing import Sequence
 from zoneinfo import ZoneInfo
 
-from .model import (Answer, Cite, Count, EvidenceId, Fact, Followup, HarnessId, Outcome, Pursuit, SentBrief, SentReview,
+from .model import (Answer, Cite, Count, EvidenceId, Fact, Followup, HarnessId, Outcome, Pursuit, SentBrief,
                     Statement, harness_of)
 from .record import Snapshot
 
@@ -306,7 +306,6 @@ def _telegram_only(style: Style) -> None:
         raise NotImplementedError(f"the {style.value} style")
 
 
-def review(r: SentReview, snap: Snapshot, style: Style) -> str: raise NotImplementedError
 def answer(a: Answer, style: Style) -> str: raise NotImplementedError
 def outcome(o: Outcome, style: Style) -> str: raise NotImplementedError
 

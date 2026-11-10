@@ -11,9 +11,10 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
-from atlas import activetime, converse, rules
+from atlas import activetime, agents, converse, rules, told
 from atlas.librarian import JournalLines
-from atlas.model import (LOCAL, Actor, Area, BriefStep, ChannelSetting, Cite, DayTime, DecisionAsk, Done, EndingProposal,
+from atlas.model import (LOCAL, Actor, Area, BriefStep, ChannelSetting, Cite, DayTime, DecisionAsk, Done, EditResumeNote,
+                         EndingProposal,
                          EvidenceId,
                          Fact, FocusProposal, HarnessId, HarnessSetting, HistoryLine, Inference, InterfaceSetting,
                          JournalDay, Kind, Membership, Note, NoteOrigin, OwnerMessage, Pattern, Profile, ProfileEntry,
@@ -843,3 +844,95 @@ def sunday_knee_offered(root: Path) -> None:
         follows_up=world.FRIDAY_BRIEF_AT.date(), followups=(), steps=(BriefStep(1, knee.id, knee.next_step.id),),
         decision=None, no_focus_yet=False, text=tutorial.fenced_block("YESTERDAY'S STEPS (from Friday)"))
     record.commit(snap.changes().put_brief(brief))
+
+
+PIHOLE = PursuitId("p-1c5v")
+REVIEW_WEEK = "2026-W47"
+SETTLED_AT = datetime(2026, 11, 17, 21, 24, tzinfo=world.TZ)    # scene 12's atlas_update
+SETTLED_IN = "greenhouse log interval"                          # the Claude Code Session scene 12 runs in
+
+
+def sunday_review(root: Path) -> None:
+    """Sunday before the Review, as the week left it: Monday to Thursday by Atlas's own rules
+    (after_scene_20b), then what the rest of the week's scenes add as their tickets write it. The
+    billing decision of Monday 21:52 and the greenhouse agent's Note of Tuesday 21:20 in the Resume
+    Notes (#10, #14); the reading tracker's Kind changed and the two password Sessions filed by
+    Sunday's split on Wednesday's ticks (scenes 14, 15); the backups proposed for Focus on Thursday;
+    the billing Step seen done on Friday and the knee Step done by word on Sunday (scenes 34, 35);
+    the staging deploy dragged to Parked on Friday (scene 31); Sunday's brief, sent at 07:30 (scene
+    34); the Pause from Friday 16:40 to Sunday 07:00 (scene 32); and the Pi-hole DNS loop, parked since its
+    Session of 14 Aug. The record holds the week's Sessions only: the fixture world's history
+    before it is mostly evening Sessions at reduced scale, which would make the brief time proposal
+    (G4) read a pattern the tutorial's owner does not have."""
+    after_scene_20(root)
+    _said(Record.open(root), "close it. continue the backups", world.CLOSE_AT, world.THURSDAY_BRIEF_AT.date().isoformat())
+    _hold(root, [s for s in world.SESSIONS if s.is_owner_session and world.FIRST_BRIEF_AT.date() <= s.start.date()
+                 and s.start < world.REVIEW_AT])
+    record = Record.open(root)
+    snap = _lent(record)
+    tue_note = Note(EvidenceId("nt-6r2tdec1"), datetime(2026, 11, 17, 21, 20, tzinfo=world.TZ), NoteOrigin.AGENT,
+                    "claude_code", "Decided to log every 5 minutes instead of every minute, to save the SD card.",
+                    about=GREENHOUSE)
+    billing = snap.pursuit(BILLING)
+    billing = replace(billing, resume=replace(billing.resume, decided=(
+        *billing.resume.decided, Fact("round VAT per invoice", _cite("per-invoice vat rounding",
+                                                                      datetime(2026, 11, 16, 21, 52, tzinfo=world.TZ))))))
+    billing = _seen(billing, "per-invoice vat rounding", datetime(2026, 11, 20, 9, 15, tzinfo=world.TZ), None)
+    greenhouse = snap.pursuit(GREENHOUSE)
+    greenhouse = replace(greenhouse, resume=replace(greenhouse.resume, decided=(
+        *greenhouse.resume.decided, Fact("log every 5 minutes", Cite(tue_note.id, "Note from Claude Code", tue_note.at)))))
+    greenhouse = _settled(greenhouse)
+    reading = snap.pursuit(READING)
+    app = evidence_id(world.by_title("reading tracker app screen"))
+    reading = _atlas_said(reading, world.KIND_TICK_AT, Inference(
+        f"{rules.KIND_CHANGED} idea to project: it has its own repository now.", (app,)))
+    staging = snap.pursuit(STAGING)
+    split = Note(EvidenceId("nt-5p1i7s0t"), SPLIT_SAID_AT, NoteOrigin.OWNER, "telegram",
+                 "split the staging deploy chores out of Billing export service")
+    rule = Fact(f'Staging deploy chores belong here, not in "{billing.name}".', Cite(split.id, "your Note", SPLIT_SAID_AT))
+    staging = replace(staging, filing_rules=(rule,))
+    for title, label in (("rotate staging db password", "Claude Code"), ("rotate staging db password again", "Codex")):
+        staging = _atlas_said(_worked(staging, title), world.KIND_TICK_AT, Inference(
+            f"Filed a {label} Session here by your Filing rule: {rule.text}", (evidence_id(world.by_title(title)),)))
+    parked_at = world.SKIP_AT + timedelta(hours=8)
+    staging = replace(staging, status=Status.PARKED, focus=False, history=(*staging.history, HistoryLine(
+        rules._next_history_id(staging), parked_at, Actor.OWNER,
+        Fact(rules.STATUS_SAID[Status.PARKED][0], Cite(EvidenceId("nt-9m3cpark"), "your Note", parked_at)))))
+    knee = snap.pursuit(KNEE)
+    said_at = datetime(2026, 11, 22, 10, 5, tzinfo=world.TZ)
+    done = Done("word", said_at, Fact("", Cite(EvidenceId("nt-8h1ndone"), "your Note", said_at)))
+    knee = replace(knee, next_step=None, past_steps=(*knee.past_steps, replace(knee.next_step, ended=done)))
+    pihole = world.by_title("pi-hole dns loop")
+    loop = evidence_id(pihole)
+    cite = Cite(loop, "Claude Code", pihole.end)
+    pi = Pursuit(
+        id=PIHOLE, name="Pi-hole DNS loop", kind=Kind.PROBLEM, area=Area("family"), status=Status.PARKED, focus=False,
+        created=BACKFILLED.date(), continued=None,
+        resume=ResumeNote((), (Fact("found the loop between Pi-hole and the router; not fixed.", cite),), (), (), (loop,)),
+        next_step=Step(StepId("s-20261115-1"), Inference("Pin the router's DNS to the Pi-hole only.", (loop,)),
+                       BACKFILLED.date()),
+        past_steps=(), filing_rules=(), sessions=(Membership(loop, pihole.end, True),), proposals=(),
+        history=(HistoryLine("h-0001", BACKFILLED, Actor.ATLAS, Inference("Created from 1 Session", (loop,))),))
+    sunday = _sent_brief(datetime(2026, 11, 22, 7, 30, tzinfo=world.TZ), SUNDAY_BRIEF_ID, (), None,
+                         tutorial.fenced_block("YESTERDAY'S STEPS (from Friday)").strip())
+    cs = snap.changes().append_note(tue_note).append_note(split).put_brief(sunday)
+    for p in (billing, greenhouse, reading, staging, knee, pi):
+        cs.put_pursuit(p)
+    record.commit(cs)
+    pause(root)
+
+
+def _settled(p: Pursuit) -> Pursuit:
+    """Scene 12's atlas_update, as agents.update writes it: the Open question removed and the owner's
+    words added as a Decided line, both resting on the Claude Code Session they were said in."""
+    (_, words), _ = tutorial.exchange("tell atlas the open question is settled")
+    said = Cite(evidence_id(world.by_title(SETTLED_IN)), "Claude Code", SETTLED_AT)
+    cmd = EditResumeNote(p.id, tuple(q.text for q in p.resume.open_questions), (told.decision(words),))
+    p, _ = rules.edit_resume(p, cmd, said, Actor.AGENT, "Claude Code")
+    line = HistoryLine(rules._next_history_id(p), SETTLED_AT, Actor.AGENT, Fact(agents._on_your_words(words), said),
+                       agent="Claude Code")
+    return replace(p, history=(*p.history, line))
+
+
+def _atlas_said(p: Pursuit, at: datetime, statement) -> Pursuit:
+    return replace(p, history=(*p.history, HistoryLine(rules._next_history_id(p), at, Actor.ATLAS, statement)))

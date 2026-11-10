@@ -42,6 +42,7 @@ HAND_EDIT_AT = datetime(2026, 11, 20, 8, 47, tzinfo=TZ)     # profile.md edited 
 PROFILE_AT = datetime(2026, 11, 20, 13, 2, tzinfo=TZ)      # "atlas, profile: ...", once Hermes is back after lunch
 FIND_AT = datetime(2026, 11, 19, 12, 10, tzinfo=TZ)        # Thursday's questions: find the GPX Session (scene 22)
 OUTSIDE_AT = datetime(2026, 11, 19, 12, 20, tzinfo=TZ)     # "atlas, send Dana ..." (scene 24)
+REVIEW_AT = datetime(2026, 11, 22, 18, 0, tzinfo=TZ)      # Sunday's Review, at the Review time kept from setup
 WEEK_TIME_AT = datetime(2026, 11, 22, 18, 40, tzinfo=TZ)   # after Sunday's Review: time by Area (scene 37)
 RESUME_AT = datetime(2026, 11, 22, 18, 45, tzinfo=TZ)      # "where did I leave off on the keyboard firmware?" (38)
 REACTIVATED_AT = datetime(2026, 11, 22, 21, 0, tzinfo=TZ)   # "by evening", after the Codex build of 18:46

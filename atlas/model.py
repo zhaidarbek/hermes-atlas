@@ -33,6 +33,7 @@ Stable across backfill re-runs and re-exports, so ingestion is an idempotent ups
 PursuitId = NewType("PursuitId", str)   # "p-4k7q": random at creation, never reused
 StepId = NewType("StepId", str)         # "s-20261116-2"
 HistoryId = NewType("HistoryId", str)   # "h-0007" (per Pursuit, monotonic)
+IsoWeek = NewType("IsoWeek", str)       # "2026-W47": the week a Review is for
 Area = NewType("Area", str)
 
 
@@ -544,12 +545,20 @@ class SentBrief:
 
 @dataclass(frozen=True)
 class SentReview:
-    week: str                               # ISO week "2026-W47"
-    attempts: tuple[SendAttempt, ...]
-    raised_parked: PursuitId | None
-    asked: tuple[PursuitId, ...]            # proposals asked in this Review
+    week: IsoWeek
+    covers: tuple[date, date]               # since the day after the last Review sent, to the Review's day
+    attempts: tuple[SendAttempt, ...]       # 1 or 2 (D Q13); status is the last attempt's
+    raised_parked: PursuitId | None         # its 90 days restart from this Review (W Q6)
+    asked: tuple[PursuitId, ...]            # Pursuits whose proposal or park this Review asked about
     time_proposed: time | None              # G4: a brief time proposed here; no new one for 4 weeks
     text: str
+    drawn_from: tuple[tuple[EvidenceId, tuple[int, ...]], ...] = ()
+    """For each Session the text draws on, the numbers (from 1) of the text's lines that do: Forget
+    removes those lines."""
+
+    @property
+    def status(self) -> SendStatus:
+        return self.attempts[-1].status
 
 
 # ---------------------------------------------------------------- settings (record file settings.md)
@@ -705,7 +714,7 @@ class Continue:      pursuit: str
 class SetFocus:      pursuit: str; on: bool
 @command(Who.OWNER)
 @dataclass(frozen=True)
-class AnswerProposal: pursuit: str; accept: bool        # "add backups" / "leave it" / "keep parked"
+class AnswerProposal: pursuit: str; accept: bool; keep_parked: bool = False   # "add backups" / "leave it" / "keep parked"
 @command(Who.OWNER, Who.AGENT_TOLD, Who.LIBRARIAN)
 @dataclass(frozen=True)
 class Merge:         a: str; b: str; into_name: str; rule: str
@@ -778,7 +787,7 @@ class DayQ:           day: date
 @dataclass(frozen=True)
 class NeglectedQ:     pass
 @dataclass(frozen=True)
-class WhichQ:         names: tuple[str, ...]
+class WhichQ:         names: tuple[str, ...]; word: str = "continue"
 @dataclass(frozen=True)
 class FindQ:          text: str
 @dataclass(frozen=True)

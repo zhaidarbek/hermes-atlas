@@ -575,6 +575,8 @@ rules.compose_review(snapshot, week) → (Review, ChangeSet)
 
 Replies to the Review (`add backups`, `keep parked`, `continue`) are claimed like brief replies (`reply_to` → review). "Keep parked" and silence both restart the 90 days, because the review file records the raise.
 
+Built so far (`atlas/review.py`): the Review covers the days since the last Review sent, or its ISO week's Monday, and is not due until a Daily Brief was sent on an earlier day, so the evening of setup brings none. DECIDED reads the Resume Notes' Decided Facts cited in the period, by Pursuit, which hold the decisions read from Sessions, agents' Notes and the owner's replies ("your reply"); the Journal's Decided lines hold only the Sessions' and would repeat them. WHAT I DID ON MY OWN leaves out the Step marks FINISHED counts and the proposals the sections below ask, and orders Atlas's lines by kind: created, Kind changed, active again, parked by silence, filed by a rule. IMPORTS lists only an export kept after a failure; one imported and deleted shows on the Board. PARKED shows the calendar days since the last Session, while the 90 days that raise it skip paused days. A section with nothing is left out; a Review with no section says "A quiet week: nothing to report." A reply answers only what the Review it replies to asked (`SentReview.asked`), or the latest Review when it replies to nothing and Atlas has sent nothing since, brief or answer (after an answer the word is left unread); a bare word that fits two of its questions asks which and changes nothing. `librarian.regroup` does not run: scene 36 shows no regrouping.
+
 ### 37. "atlas, how long did I work this week, by Area?"
 
 ```python

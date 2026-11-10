@@ -9,7 +9,8 @@ ask goes too: the Session's evidence (raw copies, transcript, card, cached model
 Pursuit statement, Step, History line and proposal that cites it, its memberships, a Pursuit
 made from it alone, every Journal line that cites it with each day's Active Time counted again
 without it, every Profile entry drawn from it, every hand-edit Note whose copied text cites it,
-the edit typed there with it, and every Note an agent left from it. forgotten.md keeps when, never what, and the
+the edit typed there with it, every Note an agent left from it, and every line of a Review drawn from it.
+forgotten.md keeps when, never what, and the
 skip key of the Session and of each Session folded into it, so collection never reads them again.
 """
 from __future__ import annotations
@@ -22,9 +23,10 @@ from pathlib import PurePosixPath
 from typing import Sequence
 from zoneinfo import ZoneInfo
 
-from . import activetime, rules
+from . import activetime, review, rules
 from .model import (Command, ConfirmForget, EvidenceId, Fact, Forgotten, HarnessId, Note, NoteOrigin, OwnerMessage,
-                    Outcome, Owner, Proposal, Pursuit, RequestForget, SessionEvidence, Statement, cites, skip_key)
+                    Outcome, Owner, Proposal, Pursuit, RequestForget, SentReview, SessionEvidence, Statement, cites,
+                    skip_key)
 from .record import ChangeSet, ForgetPlan, Snapshot, sessions_cited
 from .rules import Decision
 
@@ -115,6 +117,7 @@ class _Gone:
     days: tuple[tuple[date, int], ...]                                     # day, lines removed
     profile: int
     notes: tuple[Note, ...]
+    reviews: tuple[tuple[SentReview, int], ...]                            # Review, lines removed
 
 
 def _closure(snap: Snapshot, ids: frozenset[EvidenceId]) -> _Gone:
@@ -133,7 +136,9 @@ def _closure(snap: Snapshot, ids: frozenset[EvidenceId]) -> _Gone:
     notes = tuple(n for n in snap.notes() if (n.origin is NoteOrigin.HAND_EDIT
                   and {*n.derived_from, *sessions_cited(n.text, n.diff or "")} & ids)
                   or (n.origin in (NoteOrigin.AGENT, NoteOrigin.REFUSED_UPDATE) and set(n.derived_from) & ids))
-    return _Gone(tuple(pursuits), tuple(days), profile, notes)
+    reviews = tuple((r, n) for r in snap.reviews()
+                    if (n := len({line for id, lines in r.drawn_from if id in ids for line in lines})))
+    return _Gone(tuple(pursuits), tuple(days), profile, notes, reviews)
 
 
 def _without(p: Pursuit, ids: frozenset[EvidenceId]) -> tuple[Pursuit | None, dict[str, int]]:
@@ -185,6 +190,9 @@ def preview(snap: Snapshot, found: Sequence[SessionEvidence], msg: OwnerMessage)
             lines.append(f"- {n} line{_s(n)} in {_journal_of(day, today)}")
     if gone.profile:
         lines.append(f"- {gone.profile} entr{'y' if gone.profile == 1 else 'ies'} in your Profile")
+    for r, n in gone.reviews:
+        lines.append(f"- {n} line{_s(n)} in the Review of {r.covers[0].day} {r.covers[0]:%b} to {r.covers[1].day} "
+                     f"{r.covers[1]:%b}")
     edits = sum(1 for note in gone.notes if note.origin is NoteOrigin.HAND_EDIT)
     if edits:
         lines.append(f"- {edits} hand-edit Note{_s(edits)} that copied text from it, with the edit typed there")
@@ -246,6 +254,8 @@ def execute(snap: Snapshot, evidence: Sequence[EvidenceId], now: datetime) -> Ch
         cs.put_profile(replace(profile, entries=tuple(e for e in profile.entries if not cites(e.statement) & ids)))
     for note in gone.notes:
         cs.remove_note(note)
+    for r, _ in gone.reviews:
+        cs.put_review(review.without(r, ids))
     for id in sorted(ids & held.keys()):
         cs.remove_evidence(id)
     if keys:

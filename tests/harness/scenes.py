@@ -1413,6 +1413,74 @@ def _resume_parked(home: AtlasHome) -> None:
         raise Failed("asking where you left off counted as work on the keyboard firmware")
 
 
+# ------------------------------------------------------------------ scene 36: the weekly Review
+
+REVIEW_SHOWN = "Atlas · Review · week of 16 to 22 November"
+AS_ATLAS_WORDS_IT = {
+    "Reading tracker for the kids: a tablet app.": "Reading tracker for the kids: tablet app.",
+    'on Thursday, and its next Step\n  takes ten minutes. [I]': "on Thursday. [I]"}
+"""The tutorial's lines that Atlas words otherwise, each a recorded owner question on #20 with a
+dated default: the Resume Note keeps the choice in the owner's words ("tablet app, nothing
+fancy"); the free-slot proposal words its reason from the record alone, which holds no Step
+duration."""
+
+
+def review_items(text: str) -> dict[str, list[str]]:
+    """A Review's sections by title, each item with the lines under it joined, whitespace normalised."""
+    out: dict[str, list[str]] = {}
+    title = None
+    for line in text.splitlines()[1:]:
+        if not line.strip():
+            title = None
+        elif title is None:
+            title = line.strip()
+            out[title] = []
+        elif line.startswith("- ") or not out[title]:
+            out[title].append(" ".join(line.split()))
+        else:
+            out[title][-1] += " " + " ".join(line.split())
+    return out
+
+
+def _weekly_review(home: AtlasHome) -> None:
+    """The tick at 18:00 sends the Review, as the tutorial shows it, item by item and in order; it
+    records the parked raise and what it asked; a later tick sends no second Review that week; and
+    "add backups", replied to it, adds the backups to Focus."""
+    shown = tutorial.fenced_block(REVIEW_SHOWN)
+    for tutorial_line, atlas_line in AS_ATLAS_WORDS_IT.items():
+        shown = shown.replace(tutorial_line, atlas_line)
+    _tick_files(home)
+    sent = home.sent()
+    if len(sent) != 1:
+        raise Failed(f"the tick sent {len(sent)} messages, not one Review")
+    text = sent[0]["text"]
+    if text.splitlines()[0] != REVIEW_SHOWN:
+        raise Failed(f"the Review opens with {text.splitlines()[0]!r}")
+    want, got = review_items(shown), review_items(text)
+    if list(got) != list(want):
+        raise Failed(f"the Review has the sections {list(got)}, the tutorial {list(want)}")
+    for title, items in want.items():
+        for n, item in enumerate(items):
+            if n >= len(got[title]) or got[title][n] != item:
+                raise Failed(f"{title} item {n + 1}: the tutorial has {item!r}, Atlas sent "
+                             f"{got[title][n] if n < len(got[title]) else 'nothing'!r}")
+        if len(got[title]) > len(items):
+            raise Failed(f"{title} has more than the tutorial shows, from {got[title][len(items)]!r}")
+    kept = Record.open(home.record_root).snapshot().review(seeds.REVIEW_WEEK)
+    if kept is None or kept.status is not SendStatus.SENT or kept.text != text:
+        raise Failed("the Review file does not hold the Review as sent")
+    if kept.raised_parked != seeds.PIHOLE or seeds.BACKUPS not in kept.asked:
+        raise Failed(f"the Review file records the raise {kept.raised_parked} and the questions {kept.asked}")
+    home.set_clock(home.now + timedelta(minutes=10))
+    _tick_files(home)
+    if len(home.sent()) != 1:
+        raise Failed("a later tick sent a second Review in the same week")
+    home.telegram("add backups", reply_to=sent[0]["message_id"])
+    backups = Record.open(home.record_root).snapshot().pursuit(seeds.BACKUPS)
+    if not backups.focus or backups.proposals:
+        raise Failed(f'"add backups" left the backups with focus {backups.focus} and proposals {backups.proposals}')
+
+
 SCENES: dict[str, Scene] = {
     "1": Scene(world.SETUP_AT, seed=lambda home: None, step=_setup),
     "2": Scene(world.SETUP_AT + timedelta(minutes=5), seed=lambda home: seeds.after_scene_1(home.record_root),
@@ -1472,6 +1540,7 @@ SCENES: dict[str, Scene] = {
     "32": Scene(world.PAUSE_AT, seed=lambda home: seeds.after_scene_26(home.record_root), step=_pause),
     "33": Scene(world.SATURDAY_AT, seed=_filed_then_paused, step=_paused_saturday, llm=filing_model),
     "34": Scene(world.SUNDAY_BRIEF_AT, seed=lambda home: seeds.after_scene_33(home.record_root), step=_sunday_follow_up),
+    "36": Scene(world.REVIEW_AT, seed=lambda home: seeds.sunday_review(home.record_root), step=_weekly_review),
     "37": Scene(world.WEEK_TIME_AT, seed=lambda home: seeds.sunday_evening(home.record_root), step=_week_time),
     "38": Scene(world.RESUME_AT, seed=lambda home: seeds.keyboard_parked(home.record_root), step=_resume_parked),
     "12": Scene(agent_scenes.READ_AT, seed=lambda home: agent_scenes.greenhouse_evening(home.record_root),

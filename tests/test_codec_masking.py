@@ -21,7 +21,7 @@ SECRET = "ghp_" + "Inv3ntedT0kenAbCdEfGhIjKlMnOpQrStUvWx"
 MASK = "[secret: github token]"
 CODEC_PATHS = ["settings.md", "profile.md", "forgotten.md", "pursuits/billing-export-staging-deploy.md",
                "journal/2026-11-16.md", "notes/2026/11/2026-11-15-telegram.md", "notes/2026/11/2026-11-17-claude-code.md",
-               "notes/2026/11/2026-11-20-hand-edits.md", "briefs/2026/11/2026-11-20.md",
+               "notes/2026/11/2026-11-20-hand-edits.md", "briefs/2026/11/2026-11-20.md", "reviews/2026/2026-W47.md",
                "evidence/codex/2026/10/cx-kxmhgr73ardh6q4s/session.md",
                "evidence/codex/2026/10/cx-kxmhgr73ardh6q4s/card.md"]
 

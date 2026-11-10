@@ -36,8 +36,8 @@ from pathlib import Path
 from typing import Union
 from zoneinfo import ZoneInfo
 
-from . import _hermes, pausing, rules
-from .model import resend
+from . import _hermes, pausing, review, rules
+from .model import SendStatus, resend
 from .record import Snapshot
 
 JOB = "atlas-tick"
@@ -63,8 +63,9 @@ def due(snap: Snapshot, now: datetime) -> list[Due]:
     """The brief is due when Atlas is not paused, the local time is at or past brief_at, and
     today's file is missing, or holds an attempt model.RESEND sends again (D Q13). A brief at 23:40
     after downtime still goes out (W Q4: same day); after midnight the date is new.
-    Review: not paused, local weekday == review_day, now >= review_at, no review file for this
-    ISO week, with the same retry rule. Not built yet (#20)."""
+    The Review is due on the same terms on the Review day at review_at, by its ISO week's file, so it
+    is sent at most once a week, and once more only when its arrival is unknown. It waits until a
+    Daily Brief was sent on an earlier day, so the evening Atlas is set up brings no Review."""
     s = snap.settings()
     local = now.astimezone(ZoneInfo(s.timezone))
     pauses = pausing.kept(snap.pauses)
@@ -75,7 +76,14 @@ def due(snap: Snapshot, now: datetime) -> list[Due]:
     at = pausing.brief_from(today, pauses, s)
     first = sent is None and at is not None and now >= at
     again = sent is not None and resend(sent.attempts)
-    return [BriefDue(today)] if first or again else []
+    out: list[Due] = [BriefDue(today)] if first or again else []
+    if local.isoweekday() == s.review_day and any(
+            b.day < today and any(a.status is SendStatus.SENT for a in b.attempts) for b in snap.briefs()):
+        week = review.iso_week(today)
+        held = snap.review(week)
+        if held is None and local.time() >= s.review_at or held is not None and resend(held.attempts):
+            out.append(ReviewDue(week))
+    return out
 
 
 def install_tick(hermes_home: Path) -> str:

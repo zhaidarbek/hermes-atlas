@@ -26,7 +26,10 @@ where <words>" (FindQ),
 "send|tell|email|message <someone> <words>" in a message addressed to Atlas by name (OutsideAction,
 always refused), "how long did I work
 this|last week[, by Area]" (PeriodTimeQ), "where did I leave off on <words naming one Pursuit>"
-(ResumeQ), and a bare "prompt" right after a ResumeQ answer. A message is split into clauses at
+(ResumeQ), and a bare "prompt" right after a ResumeQ answer. In a weekly Review's context (a reply to it,
+or a message after it when no brief came since), "continue", "drop", "close it", "leave it", "keep
+parked", "reopen it", "add|remove <name>", "move it" and "keep it" answer only its questions
+(review.answer). A message is split into clauses at
 each sentence end, and at a comma or semicolon followed by a command ("1 done, 2 skip"). A clause that reads as nothing right after "<n>
 done" or a skip is that Step's detail ("skip 2, not today", "2 done. tablet app, nothing fancy");
 any other clause must read, or the message is UNREAD, and so is a message with no clause at all.
@@ -47,7 +50,7 @@ from datetime import date, timedelta
 from typing import Callable, Sequence, get_args
 from zoneinfo import ZoneInfo
 
-from . import forget, neglect, pausing
+from . import forget, neglect, pausing, review
 from .librarian import CONVERSE, Librarian, Llm, ModelError, ask
 from .messages import RESUME_HINT
 from .model import (AddArea, ApplyNote, Area, BriefStep, Command, Continue, EndingProposal, EndPause, FindQ,
@@ -181,7 +184,7 @@ _PROFILE = re.compile(r"profile\s*[:,-]?\s+(?P<words>\S.*)", re.I | re.S)
 def _command_shaped(clause: str) -> bool:
     """Whether the words have a command's shape, read or not: such words are never a Step's detail.
     An outside action's shape is not one: "1 done, message queue fixed" is a Step's detail."""
-    return any(pattern.fullmatch(clause) for pattern, read in _GRAMMAR if read is not _outside)
+    return any(pattern.fullmatch(clause) for pattern, read in _GRAMMAR if read not in _NOT_SHAPES)
 
 
 def _clauses(text: str) -> list[str]:
@@ -254,6 +257,9 @@ def _bare_status(m: re.Match, msg: OwnerMessage, snap: Snapshot) -> Command | Qu
     asked about, else the latest brief's. With no question asked, "continue" undoes the park by
     silence made before the brief replied to, and asks which when there were several."""
     word = m["word"].lower()
+    for_review = _review(word, None, msg, snap)
+    if for_review is not None:
+        return for_review
     brief = _brief(msg, snap)
     if brief is not None and brief.decision is not None:
         asked = next((p for p in snap.pursuits() if p.id == brief.decision.pursuit), None)
@@ -296,7 +302,10 @@ def _status_of(p: Pursuit, word: str) -> Command:
 
 def _close(m: re.Match, msg: OwnerMessage, snap: Snapshot) -> Command:
     """"close it" marks done the Pursuit whose ending the brief replied to proposed, or the latest
-    brief sent when the message replies to none."""
+    brief sent when the message replies to none, or the one ending the Review replied to asked about."""
+    for_review = _review("close", None, msg, snap)
+    if for_review is not None:
+        return for_review
     proposed = [id for id in neglect.proposed_in(_brief(msg, snap))
                 if any(p.id == id and not p.status.is_ending
                        and any(isinstance(x, EndingProposal) and x.to is Status.DONE for x in p.proposals)
@@ -304,6 +313,32 @@ def _close(m: re.Match, msg: OwnerMessage, snap: Snapshot) -> Command:
     if len(proposed) != 1:
         raise _Unclear(UNREAD)
     return SetStatus(proposed[0], Status.DONE)
+
+
+def _review(word: str, words: str | None, msg: OwnerMessage, snap: Snapshot) -> Command | Query | None:
+    """The answer to a question the Review asked, when the message replies to a Review or follows
+    the latest one: only a question that Review asked takes it (review.answer)."""
+    said = review.answer(word, words, msg, snap)
+    if said is review.UNREAD:
+        raise _Unclear(UNREAD)
+    return said
+
+
+def _review_word(m: re.Match, msg: OwnerMessage, snap: Snapshot) -> Command | Query:
+    """"leave it", "reopen it", "keep parked", "add <name>", "remove <name>", or any of them with a
+    name, to the Review's questions; never outside a Review's context."""
+    word = " ".join(m["word"].lower().split())
+    said = _review(word, m.groupdict().get("words"), msg, snap)
+    if said is None:
+        raise _Unclear(UNREAD)
+    return said
+
+
+def _review_time(m: re.Match, msg: OwnerMessage, snap: Snapshot) -> Command:
+    said = review.answer_time(m["word"].lower(), msg, snap)
+    if said is None or said is review.UNREAD:
+        raise _Unclear(UNREAD)
+    return said
 
 
 def _neglected(m: re.Match, msg: OwnerMessage, snap: Snapshot) -> Query:
@@ -350,7 +385,11 @@ _GRAMMAR: tuple[tuple[re.Pattern, Callable[[re.Match, OwnerMessage, Snapshot], C
     (re.compile(r"(?P<word>park|drop|continue)(?:\s+(?:it|that))?[.!]*", re.I), _bare_status),
     (re.compile(r"(?P<word>park|drop|continue)\s+(?P<words>.+)", re.I | re.S), _status),
     (re.compile(r"prompt", re.I), _bare_prompt),
-    (re.compile(r"close\s+it", re.I), _close),
+    (re.compile(r"close\s+it[.!]*", re.I), _close),
+    (re.compile(r"(?P<word>keep\s+parked|leave|reopen)(?:\s+(?:it|that))?[.!]*", re.I), _review_word),
+    (re.compile(r"(?P<word>move|keep)\s+it[.!]*", re.I), _review_time),
+    (re.compile(r"(?P<word>keep\s+parked|leave|reopen|close|add|remove)\s+(?P<words>.+?)[.!]*", re.I | re.S),
+     _review_word),
     (re.compile(r"what\s+(?:have|did)\s+i\s+neglect(?:ed)?(?:\s+lately)?\??", re.I), _neglected),
     (re.compile(r"find\s+(?:me\s+)?(?:the\s+|a\s+)?(?:conversation|session|chat)s?\s+(?:where|in which|when|about|on)"
                 r"\s+(?P<text>.+?)\??", re.I | re.S), _find),
@@ -380,6 +419,10 @@ def _brief(msg: OwnerMessage, snap: Snapshot) -> SentBrief | None:
         return None
     return snap.brief(date.fromisoformat(msg.reply_to.key))
 
+
+_NOT_SHAPES = (_outside, _review_word, _review_time)
+"""Readings whose words are a Step's detail right after "<n> done": "1 done, message queue fixed",
+"2 done, add the tests"."""
 
 _FILLER = frozenset({"the", "my", "a", "an", "one", "project", "pursuit", "it", "its", "this", "that", "these",
                      "those", "them"})

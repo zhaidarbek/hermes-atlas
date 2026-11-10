@@ -107,10 +107,11 @@ def parked_by_silence(snap: Snapshot) -> list[tuple[Pursuit, datetime]]:
     return out
 
 
-def which(names: Sequence[str]) -> str:
-    """What Atlas asks when "continue" could undo several parks by silence."""
+def which(names: Sequence[str], word: str = "continue") -> str:
+    """What Atlas asks when a bare word could answer several questions: "continue" several parks by
+    silence, or a word the Review asked about more than one Pursuit."""
     listed = ", ".join(names[:-1]) + " or " + names[-1]
-    return f'Which one: {listed}? Reply "continue" with its name.'
+    return f'Which one: {listed}? Reply "{word}" with its name.'
 
 
 def _held(p: Pursuit, today: date) -> bool:

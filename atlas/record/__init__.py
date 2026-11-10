@@ -313,7 +313,13 @@ class Snapshot:
         path = _layout.brief_path(day)
         return self._value("brief", path) if self._read(path) is not None else None
 
-    def reviews(self, since: date | None = None) -> Sequence[SentReview]: raise NotImplementedError
+    def reviews(self) -> Sequence[SentReview]:
+        """Oldest first."""
+        return [self._value("review", path) for path in self._paths("review")]
+
+    def review(self, week: str) -> SentReview | None:
+        path = _layout.review_path(week)
+        return self._value("review", path) if self._read(path) is not None else None
 
     def notes(self, since: datetime | None = None) -> Sequence[Note]:
         ids = {privacy.scrub(p.name): p.id for p in self.pursuits()}
@@ -619,8 +625,8 @@ class ChangeSet:
         return _codec.SessionRef(s.harness.label, s.title, _codec.local(s.started, self._tz()).date())
 
     def remove_pursuit(self, id: PursuitId, merged_into: PursuitId | None) -> "ChangeSet":
-        """Removes its file. With `merged_into`, the Notes about it and the briefs that name it
-        name that Pursuit instead, in the same commit."""
+        """Removes its file. With `merged_into`, the Notes about it and the briefs and Reviews that
+        name it name that Pursuit instead, in the same commit."""
         files = self._snapshot._read_pursuits[0]
         path = self._placed.pop(id, None) or next(p for p, f in files.items() if f.pursuit.id == id)
         gone = self._latest(path, "pursuit").pursuit
@@ -634,6 +640,12 @@ class ChangeSet:
                 moved = _relinked(b, id, merged_into)
                 if moved != b:
                     self._put(brief, "brief", moved)
+            for path in self._snapshot._paths("review"):
+                r = self._latest(path, "review")
+                swap = lambda x: merged_into if x == id else x
+                moved = replace(r, raised_parked=swap(r.raised_parked), asked=tuple(dict.fromkeys(map(swap, r.asked))))
+                if moved != r:
+                    self._put(path, "review", moved)
         return self
 
     def _relink_notes(self, old: str, new: str) -> None:
@@ -900,7 +912,9 @@ class ChangeSet:
         """Creating a brief file whose base is 'absent' is the send guard: two ticks racing to
         send the same day's brief -> the second commit raises Conflict and does not send."""
         return self._put(_layout.brief_path(b.day), "brief", b)
-    def put_review(self, r: SentReview) -> "ChangeSet": raise NotImplementedError
+    def put_review(self, r: SentReview) -> "ChangeSet":
+        """As put_brief: creating the week's file is the guard against a second Review that week."""
+        return self._put(_layout.review_path(r.week), "review", r)
 
     def put_pauses(self, pauses: Sequence[Pause]) -> "ChangeSet":
         return self._put(_layout.TOP_FILES["pauses"], "pauses", tuple(pauses))

@@ -39,7 +39,7 @@ from ..model import (COMMANDS, ONE_OFF, Actor, Area, BriefStep, ChannelSetting, 
                      HistoryLine, Inference, InterfaceSetting, JournalDay, Kind, Membership, Note, NoteOrigin, Pattern,
                      Pause,
                      Profile, ProfileEntry, Proposal, Pursuit, PursuitId, RawPart, ReopenProposal, ResumeNote,
-                     SendAttempt, SendStatus, SentBrief, SessionCard, SessionEvidence, Settings, Skipped, Statement,
+                     SendAttempt, SendStatus, SentBrief, SentReview, SessionCard, SessionEvidence, Settings, Skipped, Statement,
                      Status, Step, StepId, Turn, Who, cites, sent_sha256)
 from ._layout import FileKind
 
@@ -1133,6 +1133,44 @@ def _parse_brief(text: str, tz: tzinfo | None) -> SentBrief:
         no_focus_yet=f.get("no_focus_yet", False), text=body[:-1])
 
 
+# ------------------------------------------------------------------ reviews/<yyyy>/<yyyy>-W<ww>.md
+
+def _render_review(r: SentReview, tz: tzinfo | None) -> str:
+    if len(r.attempts) not in (1, 2):
+        raise Unrepresentable(f"{len(r.attempts)} send attempts: a message is sent at most twice (D Q13)")
+    last = r.attempts[-1]
+    front = ["atlas: review/1", f"week: {r.week}",
+             f"covers: {{from: {r.covers[0].isoformat()}, to: {r.covers[1].isoformat()}}}",
+             f"status: {last.status.value}", f"sent_at: {local(last.at, tz).isoformat(timespec='seconds')}",
+             f"message_ids: [{', '.join(_q(m) for m in last.message_ids)}]"]
+    if _hashes(last, r.text):
+        front.append(f"text_sha256: {_q(last.text_sha256)}")
+    if last.chat:
+        front.append(f"chat: {_q(last.chat)}")
+    if len(r.attempts) == 2:
+        front.append(f"first_attempt: {_attempt_row(r.attempts[0], r.text, tz)}")
+    front += [f"raised_parked: {r.raised_parked or 'null'}", f"asked: [{', '.join(r.asked)}]",
+              "time_proposed: " + (f'"{_hhmm(r.time_proposed)}"' if r.time_proposed else "null"),
+              "drawn_from: {" + ", ".join(f"{id}: [{', '.join(map(str, lines))}]" for id, lines in r.drawn_from) + "}"]
+    return _document(front, r.text + "\n")
+
+
+def _parse_review(text: str, tz: tzinfo | None) -> SentReview:
+    f, body = _split(text)
+    if not body.endswith("\n"):
+        raise ValueError("a review file's text ends with a newline")
+    last = _parse_attempt({"at": f["sent_at"], "status": f["status"], "message_ids": f["message_ids"],
+                           "text_sha256": f.get("text_sha256"), "chat": f.get("chat")}, tz)
+    first = (_parse_attempt(f["first_attempt"], tz),) if "first_attempt" in f else ()
+    proposed = f["time_proposed"]
+    return SentReview(
+        week=str(f["week"]), covers=(_as_date(f["covers"]["from"]), _as_date(f["covers"]["to"])),
+        attempts=(*first, last), raised_parked=PursuitId(f["raised_parked"]) if f["raised_parked"] else None,
+        asked=tuple(PursuitId(p) for p in f["asked"] or ()),
+        time_proposed=time.fromisoformat(proposed) if proposed else None, text=body[:-1],
+        drawn_from=tuple((EvidenceId(id), tuple(int(n) for n in lines)) for id, lines in (f["drawn_from"] or {}).items()))
+
+
 # ------------------------------------------------------------------ journal/<date>.md
 
 @dataclass(frozen=True)
@@ -1444,6 +1482,7 @@ CODECS: dict[FileKind, Codec] = {
     "pursuit": Codec(_render_pursuit, _parse_pursuit),
     "notes": Codec(_render_notes, _parse_notes),
     "brief": Codec(_render_brief, _parse_brief),
+    "review": Codec(_render_review, _parse_review),
     "journal": Codec(_render_journal, _parse_journal),
     "session": Codec(_render_session, _parse_session),
     "card": Codec(_render_card, _parse_card),

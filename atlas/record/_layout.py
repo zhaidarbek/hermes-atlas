@@ -106,4 +106,6 @@ def kind_of(path: str) -> FileKind | None:
         return "notes"
     if re.fullmatch(r"briefs/\d{4}/\d{2}/\d{4}-\d{2}-\d{2}\.md", path):
         return "brief"
+    if re.fullmatch(r"reviews/\d{4}/\d{4}-W\d{2}\.md", path):
+        return "review"
     return evidence_kind(path)

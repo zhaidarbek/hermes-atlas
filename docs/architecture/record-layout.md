@@ -545,7 +545,7 @@ The body is the exact text sent, so the Hermes adapter can recognise the mirrore
 
 The text is masked like every record text, and each attempt sends the text as the file holds it, so the file is exactly what was sent and a Hermes mirror row of it matches the sent ledger. The file is written as `status: sending` before each attempt and rewritten with that attempt's outcome after it, `sent` or `arrival_unknown`. `status`, `sent_at`, `message_ids`, `text_sha256` and `chat` describe the last attempt, and `sent_at` is when that attempt began. `text_sha256` is the sha256 of the text the attempt sent, stripped, written once the attempt has an outcome. The file holds it only when it is the hash of the text the file holds, so it shows nothing the text does not. A Hermes mirror row of a brief whose every attempt has it must read as the text. `chat` is where `hermes send` delivered it, `<platform>:<chat>[:<thread>]`, with a forum's General topic written as the chat itself. A Telegram message id is unique only within its chat, so a reply names this brief only in that chat. A file written before Atlas kept `chat` has none, and its ids name it in no chat: the home channel may have moved since it was sent. A message is sent at most twice (D Q13). After a second attempt the file also holds the first, as `first_attempt: {at: 2026-11-20T07:30:00+01:00, status: arrival_unknown, message_ids: [], text_sha256: "42da…"}`, so the ids of both copies stay on record. A `followups:` row holds the pursuit, step and state, plus `ending_proposed: true` when the follow-up proposed an ending. The follow-up's line itself is kept only in the text. A brief whose Steps came from recent work because no Focus was ever picked (D Q10) adds `no_focus_yet: true`.
 
-## reviews/2026/2026-W47.md (front matter only)
+## reviews/2026/2026-W47.md
 
 ```markdown
 ---
@@ -553,11 +553,45 @@ atlas: review/1
 week: 2026-W47
 covers: {from: 2026-11-16, to: 2026-11-22}
 status: sent
+sent_at: 2026-11-22T18:00:00+01:00
 message_ids: ["8977"]
-raised_parked: p-1c5v              # Pi-hole DNS loop; its 90 days restart from here
-asked: [p-3n0w]                    # Focus proposal: Home server backups
-sealed: sha256:f02e…
+text_sha256: "58b4d4d0448f16bab6e4b63c0489d353ee776a17b89350d21458b7451dd346c6"
+chat: "telegram:5550001"
+raised_parked: p-1c5v
+asked: [p-3n0w, p-1c5v]
+time_proposed: null
+drawn_from: {cc-hgont7e3jxgshlgt: [8], cc-j5jztro3lwg5kr3i: [27, 28, 29], cc-uiogx7k2kh4jrsg5: [20], cx-43k6bm6jko7pqwo6: [20], cx-nxvls2s3slklrcbo: [19], dv-sd6crxiebn4hgssc: [24], gpt-kneewkszotwqmapr: [18]}
+sealed: sha256:7eb4…
 ---
 Atlas · Review · week of 16 to 22 November
-...
+
+FINISHED
+- Payments CI flakes: you marked it done on Thursday. [F]
+- 8 Steps done: 3 you told me about, 5 I saw in your Sessions. [F]
+
+DECIDED
+- Billing export service: round VAT per invoice. [F Claude Code via T3 Code, Mon 21:52]
+- Greenhouse logger: log every 5 minutes. [F Note from Claude Code, Tue 21:20]
+- Reading tracker for the kids: tablet app. [F your reply, Tue 20:45]
+
+CHANGED
+- Parked Agent-tooling newsletter and Billing export: staging deploy. [F]
+- Dropped Bike route planner and continued Home server backups. [F]
+- Knee rehab plan added to Focus on Wednesday. [F]
+
+WHAT I DID ON MY OWN
+- Created Knee rehab plan (health) from your ChatGPT Sessions. [F]
+- Changed Reading tracker for the kids from idea to project: it has its own repository now. [I]
+- Filed 2 Sessions under Billing export: staging deploy, by Sunday's split. [F]
+  Reply to correct any of these.
+
+FOCUS
+- Payments CI flakes left Focus when you closed it, so there is a free slot. Proposed: Home server backups. You said "continue" on Thursday, and its next Step takes ten minutes. [I] Reply "add backups" or "leave it".
+
+PARKED
+- Pi-hole DNS loop · problem · quiet 100 days [F]
+  Left off: found the loop between Pi-hole and the router; not fixed. [F Claude Code, 14 Aug]
+  Continue, keep parked, or drop?
 ```
+
+A Review file is written and settled as a brief file is: `status: sending` before each attempt, at most two attempts (D Q13), and `text_sha256` only when it is the hash of the text the file holds. There is one file per ISO week, so creating it is the guard against a second Review that week. `covers` is the span it reports on: from the day after the last Review sent, or the week's Monday when none was, to the Review's day, so the first Review after a Pause covers the weeks it missed. `raised_parked` is the parked Pursuit the PARKED section raised: its 90 days count again from this Review, and so silence restarts them. `asked` lists every Pursuit a question of the Review is about (a Focus, ending or reopen proposal, a park by silence, the parked raise): a bare reply word answers only those. `time_proposed` is the Daily Brief time it proposed (G4), after which no time is proposed for four weeks. `drawn_from` maps each Session the text draws on to the numbers of the text's lines that do (from 1, the heading being line 1); Forget of that Session removes those lines and the entry, and the text's hash goes with the change.

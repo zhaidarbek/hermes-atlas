@@ -18,16 +18,17 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
-from . import activetime, ask, messages, neglect, pausing
+from . import activetime, ask, messages, neglect, pausing, review
 from .activetime import TimedSession, Work
 from .librarian import Grouping, JournalLines, PursuitDraft
-from .model import (ONE_OFF, Actor, AddArea, Answer, ApplyNote, Area, Authority, BoardView, BriefStep, Card, Cite,
-                    Command, Continue, CorrectProfile, Coverage, DayTime, Done, EditResumeNote, EndingProposal, EndPause, EvidenceId,
-                    Fact, FocusProposal, Followup, HistoryId, HistoryLine, HoldDecision, HoldStep, Inference,
-                    JournalDay, Librarian, MarkSeen, MarkStep, Merge, Note, NoteOrigin, OutsideAction, Outcome, Owner,
-                    OwnerMessage, Pause, PauseCmd, Profile, ProfileEntry, Pursuit, PursuitId, Query, ResumePromptQ,
-                    ResumeQ, SendAttempt, SendStatus, SentBrief, SentRef, SentReview, SetArea, SetFocus, SetStatus,
-                    Settings, Skipped, Split, Statement, Status, Step, StepId, Who, HarnessId, cites, harness_of, resend)
+from .model import (ONE_OFF, Actor, AddArea, Answer, AnswerProposal, ApplyNote, Area, Authority, BoardView, BriefStep,
+                    Card, ChangeSettings, Cite, Command, Continue, CorrectProfile, Coverage, DayTime, Done, EditResumeNote,
+                    EndingProposal, EndPause, EvidenceId, Fact, FocusProposal, Followup, HarnessId, HistoryId, HistoryLine,
+                    HoldDecision, HoldStep, Inference, JournalDay, Librarian, MarkSeen, MarkStep, Merge, Note,
+                    NoteOrigin, OutsideAction, Outcome, Owner, OwnerMessage, Pause, PauseCmd, Profile, ProfileEntry,
+                    Pursuit, PursuitId, Query, ReopenProposal, ResumePromptQ, ResumeQ, SendAttempt, SendStatus,
+                    SentBrief, SentRef, SentReview, SetArea, SetFocus, SetStatus, Settings, Skipped, Split, Statement,
+                    Status, Step, StepId, Who, cites, harness_of, resend)
 from .record import ChangeSet, ForgetPlan, Snapshot
 
 log = logging.getLogger(__name__)
@@ -118,6 +119,8 @@ STATUS_SAID = {Status.PARKED: ("Parked it.", "parked."),
                Status.DONE: ("Marked it done.", "done.")}
 """SetStatus by the owner's word: the History line, and what Atlas answers after the Pursuit's name."""
 LEAVES_FOCUS = "It leaves Focus."
+LEFT_FOCUS = "Left Focus."
+"""The owner's History line when an ending or a park takes a Pursuit out of Focus: the Review's free slot reads it."""
 STEP_SAID = {"done": ("Marked the Step done.", "Step done."), "skipped": ("Skipped the Step.", "Step skipped.")}
 CONTINUE_SAID = ('Said "continue".', "stays active. Its quiet days count from today.")
 ACTIVE_AGAIN = "active again. Its quiet days count from today."
@@ -186,8 +189,11 @@ def _set_status(p: Pursuit, cmd: SetStatus, said: Cite) -> tuple[Pursuit, str]:
     history, reply = STATUS_SAID[cmd.status]
     leaves = p.focus and cmd.status is not Status.ACTIVE
     if p.status is not cmd.status:
-        kept = tuple(x for x in p.proposals if not (cmd.status.is_ending and isinstance(x, EndingProposal)))
+        kept = tuple(x for x in p.proposals if not (cmd.status.is_ending and isinstance(x, EndingProposal))
+                     and not (cmd.status is Status.ACTIVE and isinstance(x, ReopenProposal)))
         p = _noted(replace(p, status=cmd.status, focus=False, proposals=kept), history, said)
+        if leaves:
+            p = _noted(p, LEFT_FOCUS, said)
     return p, f"{p.name}: {reply}" + (f" {LEAVES_FOCUS}" if leaves else "")
 
 
@@ -214,7 +220,31 @@ def _continue(p: Pursuit, cmd: Continue, said: Cite) -> tuple[Pursuit, str]:
     return p, f"{p.name}: {ACTIVE_AGAIN if parked else reply}"
 
 
+def _answer(p: Pursuit, cmd: AnswerProposal, said: Cite) -> tuple[Pursuit, str]:
+    """A reply to the Review's question about this Pursuit. "add <name>" or "remove <name>" makes the
+    Focus change proposed; "leave it" drops the proposal; "keep parked" keeps a parked Pursuit
+    parked, restarts its 90 days (W Q6) and leaves its proposals open."""
+    focus = next((x for x in p.proposals if isinstance(x, FocusProposal)), None)
+    if cmd.accept and focus is not None:
+        if focus.add and p.status is not Status.ACTIVE:
+            return p, f"{p.name}: only an active Pursuit can be in Focus."
+        kept = tuple(x for x in p.proposals if x is not focus)
+        history, reply = (f"{FOCUS_ADDED} from the Review.", "in Focus.") if focus.add else \
+            ("Took it out of Focus from the Review.", "out of Focus.")
+        return _noted(replace(p, focus=focus.add, proposals=kept), history, said), f"{p.name}: {reply}"
+    if cmd.keep_parked and p.status is Status.PARKED:
+        return (_noted(replace(p, raised_at=said.at.date()), review.KEEP_PARKED, said),
+                f"{p.name}: stays parked. I'll ask again in {RAISE_AFTER} days.")
+    open_ = focus or next((x for x in p.proposals if isinstance(x, (EndingProposal, ReopenProposal))), None)
+    if open_ is not None and not cmd.accept:
+        kept = tuple(x for x in p.proposals if x is not open_)
+        return _noted(replace(p, proposals=kept), review.LEFT_AS_IS, said), f"{p.name}: I'll leave it as it is."
+    return p, f"{p.name}: I'll leave it as it is."
+
+
 RESUME_EDITED = "Changed the Resume Note."
+QUESTION_CLOSED = 'Closed the open question "{}".'
+"""The History line of an Open question an update removed: the Review's DECIDED reads it."""
 _WORD = re.compile(r"[^\W_]+")
 
 
@@ -239,9 +269,11 @@ def named(text: str, lines: Sequence[Statement]) -> list[Statement]:
     return [s for s in lines if said and said <= {_stem(w) for w in words(s.text)}]
 
 
-def edit_resume(p: Pursuit, cmd: EditResumeNote, said: Cite) -> tuple[Pursuit, list[Statement] | None]:
+def edit_resume(p: Pursuit, cmd: EditResumeNote, said: Cite, actor: Actor = Actor.OWNER,
+                agent: str | None = None) -> tuple[Pursuit, list[Statement] | None]:
     """The Resume Note without the Open question each `remove` text is, and with `add_decided` as
-    Decided lines resting on `said`. Also the Open questions removed, or None, with the Pursuit
+    Decided lines resting on `said`, with a QUESTION_CLOSED History line by `actor` resting on `said`
+    for each Open question removed. Also the Open questions removed, or None, with the Pursuit
     unchanged, when one of them is no longer there."""
     r = p.resume
     gone = [[s for s in r.open_questions if s.text == text] for text in cmd.remove]
@@ -250,7 +282,11 @@ def edit_resume(p: Pursuit, cmd: EditResumeNote, said: Cite) -> tuple[Pursuit, l
     removed = [g[0] for g in gone]
     edited = replace(r, decided=(*r.decided, *(Fact(text, said) for text in cmd.add_decided)),
                      open_questions=tuple(s for s in r.open_questions if s not in removed))
-    return replace(p, resume=edited), removed
+    p = replace(p, resume=edited)
+    for s in removed:
+        line = HistoryLine(_next_history_id(p), said.at, actor, Fact(QUESTION_CLOSED.format(s.text), said), agent=agent)
+        p = replace(p, history=(*p.history, line))
+    return p, removed
 
 
 def _edit_resume_note(p: Pursuit, cmd: EditResumeNote, said: Cite) -> tuple[Pursuit, str]:
@@ -267,7 +303,7 @@ def _edit_resume_note(p: Pursuit, cmd: EditResumeNote, said: Cite) -> tuple[Purs
 
 CHANGES: dict[type, Callable[[Pursuit, Command, Cite], tuple[Pursuit, str]]] = {
     MarkStep: _mark_step, HoldStep: _hold_step, HoldDecision: _hold_decision, SetStatus: _set_status,
-    Continue: _continue, SetFocus: _set_focus, EditResumeNote: _edit_resume_note}
+    Continue: _continue, SetFocus: _set_focus, AnswerProposal: _answer, EditResumeNote: _edit_resume_note}
 """How the owner's word changes one Pursuit, by Command type: the new Pursuit and the line Atlas answers."""
 
 
@@ -311,12 +347,15 @@ def noted(snap: Snapshot, msg: OwnerMessage) -> Note | None:
 
 
 def replied_to(snap: Snapshot, chat: str, message_id: str) -> SentRef | None:
-    """The brief a reply in `chat` replies to: one sent there as `message_id`, either copy of a
-    brief sent twice (D Q13). A brief attempt with no chat recorded was sent before Atlas kept one,
+    """The brief or Review a reply in `chat` replies to: one sent there as `message_id`, either copy
+    of one sent twice (D Q13). An attempt with no chat recorded was sent before Atlas kept one,
     to a home channel that may have moved since, so its ids name it in no chat."""
     for b in snap.briefs():
         if any(message_id in a.message_ids and a.chat == chat for a in b.attempts):
             return SentRef("brief", b.day.isoformat(), tuple(i for a in b.attempts for i in a.message_ids))
+    for r in snap.reviews():
+        if any(message_id in a.message_ids and a.chat == chat for a in r.attempts):
+            return SentRef("review", r.week, tuple(i for a in r.attempts for i in a.message_ids))
     return None
 
 
@@ -325,10 +364,10 @@ SENDING_FOR = timedelta(minutes=2)
 
 
 def in_flight(snap: Snapshot, now: datetime) -> bool:
-    """A brief is being sent: its last attempt is SENDING and began less than SENDING_FOR ago. One
-    older than that was left by a crash."""
-    return any(b.attempts[-1].status is SendStatus.SENDING and now - b.attempts[-1].at < SENDING_FOR
-               for b in snap.briefs())
+    """A brief or Review is being sent: its last attempt is SENDING and began less than SENDING_FOR
+    ago. One older than that was left by a crash."""
+    return any(m.attempts[-1].status is SendStatus.SENDING and now - m.attempts[-1].at < SENDING_FOR
+               for m in (*snap.briefs(), *snap.reviews()))
 
 
 def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], asks: Sequence[Query],
@@ -359,6 +398,7 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
     desk = _Desk(snap)
     profile = snap.profile() if any(isinstance(c, (CorrectProfile, ApplyNote)) for c in commands) else None
     pauses = None
+    settings = None
     kept: dict[EvidenceId, Note] = {}
     lines = []
     for cmd in commands:
@@ -378,6 +418,8 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
                 profile, line = _correct_profile(profile, change, Cite(said[0].note, "your Note", said[1]), note.at)
                 if line is None:
                     return Decision(snap.changes(), Outcome(False, (), "NO_SUCH_ENTRY"))
+            elif isinstance(change, ChangeSettings):
+                settings, line = _brief_time(settings or snap.settings(), change)
             elif type(change) in FILING:
                 try:
                     line = FILING[type(change)](desk, change, Cite(note.id, "your Note", note.at),
@@ -414,6 +456,8 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
             cs.set_profile_corrections({**snap.profile_corrections(), **gone})
     if pauses is not None and pauses != pausing.kept(snap.pauses):
         cs.put_pauses(pauses)
+    if settings is not None and settings != snap.settings():
+        cs.put_settings(settings)
     cs.put_notes(kept.values())
     cs.append_note(replace(note, atlas_reply="\n".join(lines), about=about, offer=offer.id if offer else None))
     return Decision(cs, Outcome(True, tuple(lines)))
@@ -428,6 +472,14 @@ def _pausing(snap: Snapshot, pauses: tuple[Pause, ...] | None, cmd: PauseCmd | E
         return pausing.pause(held, cmd, start, s)
     briefed = snap.brief(now.astimezone(ZoneInfo(s.timezone)).date()) is not None
     return pausing.end_pause(held, start, s, briefed)
+
+
+def _brief_time(s: Settings, cmd: ChangeSettings) -> tuple[Settings, str]:
+    """"move it" or "keep it" to the Review's proposed Daily Brief time (G4)."""
+    at = time.fromisoformat(cmd.patch["brief_at"])
+    if at == s.brief_at:
+        return s, f"The Daily Brief stays at {at:%H:%M}."
+    return replace(s, brief_at=at), f"Moved the Daily Brief to {at:%H:%M}."
 
 
 def _correct_profile(profile: Profile, cmd: CorrectProfile, said: Cite, now: datetime) -> tuple[Profile, str | None]:
@@ -615,18 +667,135 @@ def neglected(snap: Snapshot, today: date) -> list[Pursuit]:
                   key=lambda p: (-quiet[p.id], p.name))
 
 
+RAISE_AFTER = 90                             # clock days a parked Pursuit is quiet before a Review raises it
+
+
+LEFT_HOW = {STATUS_SAID[Status.DONE][0]: "when you closed it", STATUS_SAID[Status.DROPPED][0]: "when you dropped it",
+            STATUS_SAID[Status.PARKED][0]: "when you parked it"}
+LEAVE_IT_DAYS = 28
+"""How long an owner's "leave it" keeps a Pursuit out of the free-slot proposal."""
+
+
+def free_slot(pursuits: Sequence[Pursuit], start: date, end: date, tz: ZoneInfo) -> Pursuit | None:
+    """The Pursuit the Review proposes for a Focus slot freed in its days (start to end), with that
+    FocusProposal, or None. A slot is free when a Focus Pursuit left Focus in those days, by an
+    ending or park (LEFT_FOCUS) or taken out (FOCUS_SAID), and the owner added nothing to Focus after.
+    No proposal when any Pursuit has an open add proposal. The one proposed: an active Pursuit not in
+    Focus that the owner said "continue" on or made active in those days, the latest such act
+    first, then by name; never one the owner answered "leave it" for in the last LEAVE_IT_DAYS. The
+    reason is read from the record alone: which Pursuit left and how, and the owner's act with its day."""
+    day = lambda at: at.astimezone(tz).date()
+    within = lambda h: h.actor is Actor.OWNER and start <= day(h.at) <= end
+    left = [(h, p, LEFT_HOW.get(next((g.statement.text for g in reversed(p.history[:i]) if g.at == h.at), ""),
+                                "when it ended"))
+            for p in pursuits for i, h in enumerate(p.history) if within(h) and h.statement.text == LEFT_FOCUS]
+    left += [(h, p, "when you took it out") for p in pursuits for h in p.history
+             if within(h) and h.statement.text.startswith(FOCUS_SAID[False][0].split(" on ")[0])]
+    if not left:
+        return None
+    h_left, gone, how = max(left, key=lambda x: x[0].at)
+    if any(h.actor is Actor.OWNER and h.statement.text.startswith(FOCUS_ADDED) and h.at > h_left.at
+           for p in pursuits for h in p.history):
+        return None
+    if any(isinstance(x, FocusProposal) and x.add and not p.focus for p in pursuits for x in p.proposals):
+        return None
+    acts = {CONTINUE_SAID[0]: 'said "continue"', STATUS_SAID[Status.ACTIVE][0]: "made it active"}
+    found = []
+    for p in pursuits:
+        if p.id == gone.id or p.status is not Status.ACTIVE or p.focus:
+            continue
+        if any(h.actor is Actor.OWNER and h.statement.text == review.LEFT_AS_IS
+               and (end - day(h.at)).days < LEAVE_IT_DAYS for h in p.history):
+            continue
+        found += [(h, p) for h in p.history if within(h) and h.statement.text in acts]
+    if not found:
+        return None
+    h, p = min(found, key=lambda hp: (-hp[0].at.timestamp(), hp[1].name))
+    on = day(h.at)
+    when = f"on {on:%A}" if 0 <= (end - on).days < 7 else f"on {on.day} {on:%b}"
+    reason = Inference(f"{gone.name} left Focus {how}, so there is a free slot. Proposed: {p.name}. "
+                       f"You {acts[h.statement.text]} {when}.", tuple(sorted(cites(h_left.statement) | cites(h.statement))))
+    return replace(p, proposals=(*p.proposals, FocusProposal(True, reason, end)))
+
+
 def parked_to_raise(snap: Snapshot, today: date) -> Pursuit | None:
-    """The parked Pursuit quiet longest, counted from max(last_worked, raised_at), if >= 90 clock days."""
-    raise NotImplementedError
+    """The parked Pursuit quiet longest, counted from the later of its last Session, the owner's
+    "continue" or "keep parked", and the last Review that raised it, once that is at least 90 clock
+    days (W Q6). At most one."""
+    s, pauses, reviews = snap.settings(), pausing.kept(snap.pauses), snap.reviews()
+    quiet = {p.id: clock_days(review.parked_since(reviews, p), today, pauses, s)
+             for p in snap.pursuits() if p.status is Status.PARKED}
+    ready = [p for p in snap.pursuits() if quiet.get(p.id, 0) >= RAISE_AFTER]
+    return min(ready, key=lambda p: (-quiet[p.id], p.name), default=None)
+
+
+PROPOSE = (14, 10, timedelta(minutes=60), 15)
+"""G4: of the last 14 days with Active Time and no Pause, at least 10 whose first start is 60
+minutes or more from the brief time; the proposal is rounded down to 15 minutes."""
+LOOK_BACK = 56
+DECLINED_FOR = timedelta(weeks=4)
 
 
 def time_proposal(snap: Snapshot, today: date) -> time | None:
     """G4. Over the last 14 days with Active Time and no Pause: if on >= 10 of them the first
     Active Time began >= 60 min before or after settings.brief_at, return the median of those
-    first starts rounded down to the quarter hour; else None. None also while a proposal was
-    declined or ignored in a Review of the last 4 weeks (SentReview.time_proposed). Counted
-    Fact [F]. Daily Brief only; the Review time is never proposed in v1."""
-    raise NotImplementedError
+    first starts rounded down to the quarter hour; else None. None also while a Review of the last
+    4 weeks proposed one: "keep it" and silence alike wait 4 weeks. Counted Fact [F]. Daily Brief
+    only; the Review time is never proposed in v1."""
+    return time_proposal_of(snap, today)[0]
+
+
+def time_proposal_of(snap: Snapshot, today: date) -> tuple[time | None, int]:
+    """The proposal, and on how many of the days the first start was off."""
+    if any(r.time_proposed is not None and today - r.covers[1] < DECLINED_FOR for r in snap.reviews()):
+        return None, 0
+    s = snap.settings()
+    zone = ZoneInfo(s.timezone)
+    since = today - timedelta(days=LOOK_BACK)
+    paused_days = {since + timedelta(days=n) for n in range(LOOK_BACK + 1)
+                   if any(p.start < datetime.combine(since + timedelta(days=n + 1), time(), zone) and
+                          p.end > datetime.combine(since + timedelta(days=n), time(), zone) for p in pausing.kept(snap.pauses))}
+    one_offs = {h.id: card.one_off_area for h in snap.held().sessions()
+                if (card := _card_or_none(snap, h.id)) and card.one_off_area}
+    return proposed_time(first_starts(timed(snap, one_offs, datetime.combine(since, time(), zone)), s, since, today),
+                         paused_days, s.brief_at)
+
+
+def first_starts(sessions: Sequence[TimedSession], s: Settings, since: date, until: date) -> dict[date, time]:
+    """When Active Time first began on each local day from `since` to the day before `until`."""
+    zone = ZoneInfo(s.timezone)
+    starts: dict[date, time] = {}
+    for t in sessions:
+        for i in activetime.stretches(t.owner_times, t.agent_times, s.gap):
+            local = i.start.astimezone(zone)
+            if since <= local.date() < until and (local.date() not in starts or local.time() < starts[local.date()]):
+                starts[local.date()] = local.time().replace(second=0, microsecond=0)
+    return starts
+
+
+def proposed_time(starts: Mapping[date, time], paused: set[date] | frozenset[date], brief_at: time
+                  ) -> tuple[time | None, int]:
+    """G4's rule on the first start of each day with Active Time: the median of the off days' starts,
+    rounded down to the quarter hour, and how many days were off."""
+    window, needed, apart, quarter = PROPOSE
+    days = sorted(d for d in starts if d not in paused)[-window:]
+    minutes = lambda t: t.hour * 60 + t.minute
+    off = sorted(minutes(starts[d]) for d in days
+                 if abs(minutes(starts[d]) - minutes(brief_at)) >= apart.total_seconds() // 60)
+    if len(off) < needed:
+        return None, len(off)
+    mid = len(off) // 2
+    median = off[mid] if len(off) % 2 else (off[mid - 1] + off[mid]) // 2
+    median -= median % quarter
+    at = time(median // 60, median % 60)
+    return (None if at in (brief_at, time()) else at), len(off)
+
+
+def _card_or_none(snap: Snapshot, id: EvidenceId):
+    try:
+        return snap.card(id)
+    except Exception:
+        return None
 
 
 def offers(snap: Snapshot, pursuit: PursuitId, step: Step) -> int:
@@ -661,8 +830,7 @@ def compose_daily(snap: Snapshot, now: datetime) -> Decision:
     with no sign rest a day. The brief never pads to three Steps.
     The follow-up proposes an ending only where yesterday's Step finished the Pursuit, and the
     decision slot counts its asks (neglect).
-    # TODO pseudocode (#10):
-    #   3rd skip in a row on a Focus Pursuit -> FocusProposal(remove)
+    A third Step in a row skipped on a Focus Pursuit proposes taking it out of Focus (review.removal).
     """
     s, pauses = snap.settings(), pausing.kept(snap.pauses)
     if paused(pauses, now):
@@ -679,7 +847,8 @@ def compose_daily(snap: Snapshot, now: datetime) -> Decision:
     pursuits = []
     for p in snap.pursuits():
         if p.next_step is not None and p.next_step.ended is None and offers(snap, p.id, p.next_step) >= OFFERS:
-            p = _skip_by_silence(p, datetime.combine(today, time(), tzinfo=ZoneInfo(s.timezone)), now)
+            p = review.removal(_skip_by_silence(p, datetime.combine(today, time(), tzinfo=ZoneInfo(s.timezone)), now),
+                               today)
             cs.put_pursuit(p)
         pursuits.append(p)
     prev = _previous(snap, today)
@@ -785,12 +954,10 @@ def _worked_late(p: Pursuit, s: Settings) -> bool:
 
 
 def compose_review(snap: Snapshot, now: datetime) -> Decision:
-    """Weekly Review for the ISO week ending now. Covers everything since the previous SENT
-    Review (so the first Review after a Pause covers the whole gap). Sections from History
-    lines and Journal 'Decided' lines (already marked), open proposals not raised in a
-    follow-up, parked_to_raise (records raised_at), pending hand edits, reverted agent
-    changes, and a brief-time proposal when the Profile's work pattern disagrees."""
-    raise NotImplementedError
+    """This ISO week's Review, committed as SENDING before it is sent (atlas.review). It covers
+    everything since the previous Review sent, so the first Review after a Pause covers the whole
+    gap; its sections are pure functions of the record."""
+    return review.compose(snap, now)
 
 
 # ------------------------------------------------------------------ librarian results -> state

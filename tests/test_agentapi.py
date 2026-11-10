@@ -293,7 +293,8 @@ def test_one_message_makes_one_change(home):
     p = _greenhouse(home)
     assert again.error and again.text == agents.USED
     assert [d.text for d in p.resume.decided].count(DECIDED) == 1
-    assert sum(1 for h in p.history if h.agent == "Claude Code") == 1
+    assert [h.statement.text for h in p.history if h.agent == "Claude Code"] == [
+        rules.QUESTION_CLOSED.format(QUESTION), agents._on_your_words(WORDS)]
 
 
 @pytest.mark.parametrize("change", [

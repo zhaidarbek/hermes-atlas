@@ -44,13 +44,14 @@ def test_a_session_appears_only_once_the_clock_passes_it(home):
     assert list(projects.rglob(f"{week_session.native}.jsonl"))
 
 
-def test_the_report_lists_every_scene_and_gates_only_on_claimed_ones():
-    results = scenes.run_scenes(frozenset({"1", "36"}))
+def test_the_report_lists_every_scene_and_gates_only_on_claimed_ones(monkeypatch):
+    monkeypatch.delitem(scenes.SCENES, "23")
+    results = scenes.run_scenes(frozenset({"1", "23"}))
     lines = scenes.report(results, {"1": scenes.Result("fail", "not built")}).splitlines()
     assert [line.split()[0] for line in lines[1:44]] == list(scenes.SCENE_IDS)
     assert sorted(scenes.WEEK) == sorted(scenes.SCENE_IDS)
     assert len(scenes.SCENE_IDS) == 43 and {"3a", "3b", "3c", "9b", "20b"} <= set(scenes.SCENE_IDS)
-    assert str(results["36"]) == "fail (claimed, but the harness has no step for it)"
+    assert str(results["23"]) == "fail (claimed, but the harness has no step for it)"
     assert str(results["3a"]) == "not claimed"
 
 

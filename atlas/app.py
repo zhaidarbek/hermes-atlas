@@ -21,13 +21,13 @@ from typing import Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo, available_timezones
 
 from . import (__version__, activetime, agents, ask, channel, converse, corrections, filing, forget, neglect, profiling,
-               rules, schedule, settings_rules, sources)
+               review, rules, schedule, settings_rules, sources)
 from .librarian import JournalLines, Librarian, Llm, ModelError, Unusable
 from .model import (Agent, Answer, ApplyNote, Authority, BoardQ, ChangeSettings, ChannelSetting, Command, ConfirmForget,
                     Coverage, DayTime, EvidenceId, FindQ, HarnessId, HarnessSetting, InterfaceSetting, NeglectedQ, NoteOrigin,
                     Owner,
                     OwnerMessage, Outcome, PeriodTimeQ, Profile, Query, Reply, RequestForget, ResumePromptQ, ResumeQ,
-                    SendStatus, Sent, SentRef, SessionCard, Settings, Split, Status, WhichQ, sent_sha256)
+                    SendStatus, Sent, SentBrief, SentRef, SessionCard, Settings, Split, Status, WhichQ, sent_sha256)
 from .record import Blocked, ChangeSet, Conflict, ImportLog, Record, Snapshot
 from .sources import webchat
 from .rules import Decision
@@ -353,7 +353,7 @@ class Atlas:
         if isinstance(q, NeglectedQ):
             return Answer(None, (), Coverage(), data=neglect.answer(snap, now))
         if isinstance(q, WhichQ):
-            return Answer(None, (), Coverage(), data=neglect.which(q.names))
+            return Answer(None, (), Coverage(), data=neglect.which(q.names, q.word))
         if isinstance(q, FindQ):
             if self._llm is None:
                 raise ModelError("no model to read the Sessions with")
@@ -854,7 +854,10 @@ class Atlas:
                 return ()
             sent = []
             for due in schedule.due(self._record.snapshot(), now):
-                if self._send(lambda snap: rules.compose_daily(snap, now)) is SendStatus.SENT:
+                if isinstance(due, schedule.ReviewDue):
+                    if self._send(lambda snap: rules.compose_review(snap, now)) is SendStatus.SENT:
+                        sent.append(f"review {due.week}")
+                elif self._send(lambda snap: rules.compose_daily(snap, now)) is SendStatus.SENT:
                     sent.append(f"brief {due.day.isoformat()}")
             return tuple(sent)
 
@@ -869,8 +872,8 @@ class Atlas:
         return Reply(written.atlas_reply if written is not None else FAILED)
 
     def _send(self, plan: Callable[[Snapshot], Decision]) -> SendStatus | None:
-        """Commit (status SENDING) -> channel.send -> commit (SENT + message ids, or
-        ARRIVAL_UNKNOWN). The text sent is the one the brief file holds, its secrets masked, so
+        """For a brief or a Review: commit (status SENDING) -> channel.send -> commit (SENT + message
+        ids, or ARRIVAL_UNKNOWN). The text sent is the one its file holds, its secrets masked, so
         it is exactly what was sent and a Hermes mirror row of it matches. The outcome keeps that
         text's hash, so only a row that reads exactly so is taken for the mirror. A send `hermes`
         refused before sending leaves the attempt SENDING, which the next tick takes as arrival
@@ -883,26 +886,39 @@ class Atlas:
             log.warning("Atlas left the brief to the next tick: the record kept changing while it wrote it (%s)",
                         type(error).__name__)
             return None
+        except Exception as error:
+            log.warning("Atlas left a message to the next tick: it could not write it (%s)", type(error).__name__)
+            return None
         if message is None:
             return None
-        snap = self._record.snapshot()
-        text = snap.brief(message.day).text
+        what = "brief" if isinstance(message, SentBrief) else "Review"
+        try:
+            snap = self._record.snapshot()
+            text = snap.brief(message.day).text if what == "brief" else snap.review(message.week).text
+        except Exception as failed:
+            log.warning("Atlas could not read back the %s it wrote (%s)", what, type(failed).__name__)
+            return None
         attempt = replace(message.attempts[-1], text_sha256=sent_sha256(text))
         try:
             sent = channel.Telegram(snap.settings()).send(text)
             outcome = replace(attempt, status=SendStatus.SENT, message_ids=sent.message_ids, chat=sent.chat)
         except channel.SendRefused as refused:
-            log.warning("Atlas could not send the brief (%s); the next tick tries once more",
+            log.warning("Atlas could not send the %s (%s); the next tick tries once more", what,
                         type(refused.__cause__ or refused).__name__)
             return None
         except Exception as failed:
-            log.warning("Atlas could not send the brief (%s)", type(failed).__name__)
+            log.warning("Atlas could not send the %s (%s)", what, type(failed).__name__)
             outcome = replace(attempt, status=SendStatus.ARRIVAL_UNKNOWN)
+        settle = (lambda snap: rules.settle_send(snap, message.day, outcome)) if what == "brief" else (
+            lambda snap: review.settle(snap, message.week, outcome))
         try:
-            self._decide(lambda snap: rules.settle_send(snap, message.day, outcome))
+            self._decide(settle)
         except Conflict as error:
-            log.warning("Atlas left the brief's attempt marked sending: the record kept changing while it wrote "
-                        "the outcome (%s). The next tick takes its arrival as unknown", type(error).__name__)
+            log.warning("Atlas left the %s's attempt marked sending: the record kept changing while it wrote the "
+                        "outcome (%s). The next tick takes its arrival as unknown", what, type(error).__name__)
+        except Exception as error:
+            log.warning("Atlas left the %s's attempt marked sending: it could not write the outcome (%s). The next "
+                        "tick takes its arrival as unknown", what, type(error).__name__)
         return outcome.status
 
 
@@ -924,10 +940,10 @@ def _days(snap: Snapshot, start: date, last: date, today: date) -> list[DayTime]
 
 
 def _sent(snap: Snapshot) -> Sent:
-    """Every text Atlas sent. A brief whose every attempt kept the hash of its text was sent as its
-    file holds it. Any other brief, and a Note's reply, which keeps no hash, may have been sent
+    """Every text Atlas sent. A brief or Review whose every attempt kept the hash of its text was sent
+    as its file holds it. Any other, and a Note's reply, which keeps no hash, may have been sent
     bare."""
-    briefs = snap.briefs()
+    briefs = [*snap.briefs(), *snap.reviews()]
     replies = [n.atlas_reply.strip() for n in snap.notes() if n.atlas_reply]
     unsure = [b.text.strip() for b in briefs if any(a.text_sha256 != sent_sha256(b.text) for a in b.attempts)]
     return Sent(frozenset([*(b.text.strip() for b in briefs), *replies]), frozenset([*unsure, *replies]))
