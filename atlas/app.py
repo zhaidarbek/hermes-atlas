@@ -20,11 +20,12 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo, available_timezones
 
-from . import (__version__, activetime, ask, channel, converse, corrections, filing, forget, neglect, rules, schedule,
+from . import (__version__, activetime, agents, ask, channel, converse, corrections, filing, forget, neglect, rules, schedule,
                settings_rules, sources)
 from .librarian import JournalLines, Librarian, Llm, ModelError, Unusable
-from .model import (Answer, ApplyNote, Authority, BoardQ, ChangeSettings, ChannelSetting, Command, ConfirmForget,
-                    Coverage, DayTime, EvidenceId, FindQ, HarnessId, HarnessSetting, InterfaceSetting, NeglectedQ, Owner,
+from .model import (Agent, Answer, ApplyNote, Authority, BoardQ, ChangeSettings, ChannelSetting, Command, ConfirmForget,
+                    Coverage, DayTime, EvidenceId, FindQ, HarnessId, HarnessSetting, InterfaceSetting, NeglectedQ, NoteOrigin,
+                    Owner,
                     OwnerMessage, Outcome, PeriodTimeQ, Profile, Query, Reply, RequestForget, ResumePromptQ, ResumeQ,
                     SendStatus, Sent, SentRef, SessionCard, Settings, Split, Status, WhichQ, sent_sha256)
 from .record import Blocked, ChangeSet, Conflict, ImportLog, Record, Snapshot
@@ -286,8 +287,7 @@ class Atlas:
             return None
         answers = {q: self._answered(q, msg.at) for q in reading.asks if not isinstance(q, ResumePromptQ)}
         try:
-            applies = {cmd.note: librarian.edit_to_commands(snap, next(n for n in snap.pending_applies()
-                                                                         if n.id == cmd.note))
+            applies = {cmd.note: _applied(snap, librarian, cmd.note)
                        for cmd in reading.commands if isinstance(cmd, ApplyNote)}
         except ModelError as unusable:
             log.info("Atlas could not read a hand edit to apply (%s); the message is left to Hermes's agent",
@@ -309,21 +309,28 @@ class Atlas:
             return None
         return self._settled(msg)
 
-    def act(self, cmd: Command, who: Authority, now: datetime) -> Outcome:
+    def act(self, cmd: Command, who: Authority, now: datetime, words: str | None = None) -> Outcome:
         """Structured change from the Board, the Settings page, or an agent tool. Same
         rules.decide path as handle(), so the rules hold for every writer. An agent change
         refused for want of an Instruction is committed as a REFUSED_UPDATE Note (pending=cmd,
-        text quotes the owner's words the agent passed) and the Outcome says so (D Q12).
-        Built so far: the Board's SetFocus, SetStatus and MarkSeen (rules.from_board), and the
-        Settings tab's ChangeSettings (settings_rules.from_settings)."""
+        text quotes the owner's `words` the agent passed) and the Outcome says so (D Q12).
+        Built so far: the Board's SetFocus, SetStatus and MarkSeen (rules.from_board), the
+        Settings tab's ChangeSettings (settings_rules.from_settings), and an agent's AddNote and
+        EditResumeNote (agents.decide)."""
+        if isinstance(who, Agent):
+            return self._decide(lambda snap: agents.decide(snap, cmd, who, now, words)).outcome
         if not (isinstance(who, Owner) and who.via == "board"):
-            raise NotImplementedError("a change by an agent tool (#14)")
+            raise NotImplementedError("a change by another writer")
         if isinstance(cmd, ChangeSettings):
             typed = settings_rules.roots_typed(cmd.patch)
             here = settings_rules.Here(_tilde(self._record.root / "inbox"),
                                        typed is not None and sources.linked(typed[1], typed[0]), sources.defaults())
             return self._decide(lambda snap: settings_rules.from_settings(snap, cmd, who, now, here)).outcome
         return self._decide(lambda snap: rules.from_board(snap, cmd, who, now)).outcome
+
+    def snapshot(self) -> Snapshot:
+        """The record as it is now, for a reader that renders it itself, as agentapi does."""
+        return self._record.snapshot()
 
     def read(self, q: Query, now: datetime | None = None) -> Answer:
         """Never commits. Deterministic for ResumeQ/DayQ/NeglectedQ/PeriodQ/PeriodTimeQ/BoardQ;
@@ -969,6 +976,12 @@ def _conversed(snap: Snapshot, msg: OwnerMessage, reading: converse.Interpretati
     if reading.cancel_pending_forget:
         forget.cancel(decision.changes, snap)
     return decision
+
+
+def _applied(snap: Snapshot, librarian: Librarian | None, id: EvidenceId) -> Sequence[Command]:
+    """What "apply" makes of a Note: a refused agent change as it was kept, a hand edit as the model reads it."""
+    note = next(n for n in snap.pending_applies() if n.id == id)
+    return (note.pending,) if note.origin is NoteOrigin.REFUSED_UPDATE else librarian.edit_to_commands(snap, note)
 
 
 def _journaled(snap: Snapshot) -> Journaled | None:

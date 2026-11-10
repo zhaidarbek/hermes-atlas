@@ -347,11 +347,14 @@ class Note:
     diff: str | None = None                 # HAND_EDIT only
     pending: "Command | None" = None        # REFUSED_UPDATE: the change "apply" would make
     offered: bool = False                   # HAND_EDIT / REFUSED_UPDATE: "apply" already offered in an answer
-    derived_from: tuple[EvidenceId, ...] = ()  # HAND_EDIT only: Evidence the edited file or Atlas's last-written
-                                               # copy cites, so Forget also removes Atlas text copied into the Note
+    derived_from: tuple[EvidenceId, ...] = ()  # HAND_EDIT: Evidence the edited file or Atlas's last-written copy
+                                               # cites; AGENT / REFUSED_UPDATE: the calling Session. Forget of
+                                               # one of them removes the Note too
     platform_ref: str | None = None         # inbound platform message id: a redelivered message is one Note
-    cwd: str | None = None                  # AGENT only: the calling Session's folder, shown in the Notes file
+    cwd: str | None = None                  # AGENT / REFUSED_UPDATE: the calling Harness's folder, in the Notes file
     applied: bool = False                   # HAND_EDIT / REFUSED_UPDATE: "apply" made the change
+    offer: EvidenceId | None = None         # OWNER: the Note Atlas's reply offered to "apply"; "apply" makes
+                                            # the one the latest offer named
 
 
 @dataclass(frozen=True)
@@ -640,9 +643,10 @@ class Instruction:
 
 @dataclass(frozen=True)
 class Agent:
-    harness: str                            # MCP clientInfo name or "hermes"
+    harness: str                            # HarnessId value of the calling Harness
     session: BoundSession | None
     instruction: Instruction | None         # required for any Pursuit change; None for Notes
+    cwd: str | None = None                  # the folder the calling Harness ran the tool server in
 
 
 @dataclass(frozen=True)

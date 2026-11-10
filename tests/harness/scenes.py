@@ -27,7 +27,7 @@ from atlas import rules
 from atlas.model import Done, Fact, HarnessId, Inference, SendStatus, Skipped, Status, Who, skip_key
 from atlas.record import Record, Snapshot
 
-from . import exports, seeds, tutorial, world
+from . import agent_scenes, exports, seeds, tutorial, world
 from .fake_llm import FakeLlm
 from .home import AtlasHome
 from .model import CORRECTED, STAGING, WRONG, corrections_model, filing_model, profile_model, world_model
@@ -1431,6 +1431,10 @@ SCENES: dict[str, Scene] = {
     "34": Scene(world.SUNDAY_BRIEF_AT, seed=lambda home: seeds.after_scene_33(home.record_root), step=_sunday_follow_up),
     "37": Scene(world.WEEK_TIME_AT, seed=lambda home: seeds.sunday_evening(home.record_root), step=_week_time),
     "38": Scene(world.RESUME_AT, seed=lambda home: seeds.keyboard_parked(home.record_root), step=_resume_parked),
+    "12": Scene(agent_scenes.READ_AT, seed=lambda home: agent_scenes.greenhouse_evening(home.record_root),
+                step=agent_scenes.agent_in_claude_code),
+    "23": Scene(agent_scenes.AUGUST_AT, seed=lambda home: agent_scenes.august(home.record_root),
+                step=agent_scenes.codex_asks_about_august),
 }
 
 

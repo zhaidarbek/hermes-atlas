@@ -227,12 +227,15 @@ def test_a_reply_carries_one_offer_however_many_edits_wait(record):
     assert [n.offered for n in record.snapshot().pending_applies()] == [True, True, True]
 
 
-def test_apply_names_the_latest_hand_edit_of_the_profile(record):
+def test_apply_makes_the_hand_edit_the_latest_offer_named_and_no_other(record):
+    librarian = Librarian(llm({"changes": []}), record)
     edit_profile(record)
     record.reconcile()
+    record.commit(rules.converse(record.snapshot(), message("invented words", 1), (), ()).changes)
+    [profile_edit] = record.snapshot().pending_applies()
+    assert converse.interpret(message("apply", 2), record.snapshot(), librarian).commands == (
+        ApplyNote(profile_edit.id),)
     (record.root / "pauses.md").write_text("invented hand edit\n")
     record.reconcile()
-    snap = record.snapshot()
-    [profile_edit] = [n for n in snap.pending_applies() if n.via == "profile.md"]
-    librarian = Librarian(llm({"changes": []}), record)
-    assert converse.interpret(message("apply", 1), snap, librarian).commands == (ApplyNote(profile_edit.id),)
+    record.commit(rules.converse(record.snapshot(), message("more invented words", 3), (), ()).changes)
+    assert converse.interpret(message("apply", 4), record.snapshot(), librarian).unclear == converse.UNREAD

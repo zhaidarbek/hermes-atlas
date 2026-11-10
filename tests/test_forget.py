@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import pytest
 
 from atlas import forget
-from atlas.model import (ConfirmForget, EvidenceId, HarnessId, Inference, Note, NoteOrigin, OwnerMessage, Profile, ProfileEntry,
+from atlas.model import (ConfirmForget, EditResumeNote, EvidenceId, HarnessId, Inference, Note, NoteOrigin, OwnerMessage, Profile, ProfileEntry,
                          RawPart, RequestForget, SessionEvidence, Turn, Who, part_origin, skip_key)
 from atlas.record import FilingRetry, ForgetPlan, Record
 from harness import scenes, seeds, world
@@ -261,3 +261,20 @@ def test_a_session_waiting_out_a_filing_back_off_leaves_no_trace_of_it(home):
     _forget_and_tick(home)
     assert _everywhere(root, CONFIG) == []
     assert set(_snap(home).filing_retries()) == {ENVVARS}
+
+
+def test_a_note_an_agent_left_from_it_goes_with_it_and_another_sessions_stays(home):
+    record = Record.open(home.record_root)
+    snap = record.snapshot()
+    at = world.FORGET_AT - timedelta(hours=1)
+    left = Note(EvidenceId("nt-agentone"), at, NoteOrigin.AGENT, "codex", "Decided to keep an invented setting.",
+                derived_from=(CONFIG,), cwd="~/work/billing-export")
+    refused = Note(EvidenceId("nt-agenttwo"), at, NoteOrigin.REFUSED_UPDATE, "codex", "tell atlas an invented thing",
+                   derived_from=(CONFIG,), pending=EditResumeNote("p-9m3c", (), ("Invented.",)))
+    other = Note(EvidenceId("nt-agentthr"), at, NoteOrigin.AGENT, "codex", "Another invented Note.",
+                 derived_from=(ENVVARS,))
+    record.commit(snap.changes().append_note(left).append_note(refused).append_note(other))
+    preview = _forget_and_tick(home)
+    assert "- 2 Notes an agent left from it" in preview
+    assert [n.id for n in _snap(home).notes() if n.origin in (NoteOrigin.AGENT, NoteOrigin.REFUSED_UPDATE)] == [other.id]
+    assert _everywhere(home.record_root, "invented setting") == []

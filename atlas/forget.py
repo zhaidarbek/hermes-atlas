@@ -8,8 +8,8 @@ goes is worked out again from the record when the owner confirms, so a line writ
 ask goes too: the Session's evidence (raw copies, transcript, card, cached model outputs), every
 Pursuit statement, Step, History line and proposal that cites it, its memberships, a Pursuit
 made from it alone, every Journal line that cites it with each day's Active Time counted again
-without it, every Profile entry drawn from it, and every hand-edit Note whose copied text cites it,
-the edit typed there with it. forgotten.md keeps when, never what, and the
+without it, every Profile entry drawn from it, every hand-edit Note whose copied text cites it,
+the edit typed there with it, and every Note an agent left from it. forgotten.md keeps when, never what, and the
 skip key of the Session and of each Session folded into it, so collection never reads them again.
 """
 from __future__ import annotations
@@ -130,8 +130,9 @@ def _closure(snap: Snapshot, ids: frozenset[EvidenceId]) -> _Gone:
         if lines or set(j.evidence) & ids:
             days.append((day, lines))
     profile = sum(1 for e in snap.profile().entries if cites(e.statement) & ids)
-    notes = tuple(n for n in snap.notes() if n.origin is NoteOrigin.HAND_EDIT
+    notes = tuple(n for n in snap.notes() if (n.origin is NoteOrigin.HAND_EDIT
                   and {*n.derived_from, *sessions_cited(n.text, n.diff or "")} & ids)
+                  or (n.origin in (NoteOrigin.AGENT, NoteOrigin.REFUSED_UPDATE) and set(n.derived_from) & ids))
     return _Gone(tuple(pursuits), tuple(days), profile, notes)
 
 
@@ -184,9 +185,12 @@ def preview(snap: Snapshot, found: Sequence[SessionEvidence], msg: OwnerMessage)
             lines.append(f"- {n} line{_s(n)} in {_journal_of(day, today)}")
     if gone.profile:
         lines.append(f"- {gone.profile} entr{'y' if gone.profile == 1 else 'ies'} in your Profile")
-    if gone.notes:
-        n = len(gone.notes)
-        lines.append(f"- {n} hand-edit Note{_s(n)} that copied text from it, with the edit typed there")
+    edits = sum(1 for note in gone.notes if note.origin is NoteOrigin.HAND_EDIT)
+    if edits:
+        lines.append(f"- {edits} hand-edit Note{_s(edits)} that copied text from it, with the edit typed there")
+    if len(gone.notes) > edits:
+        n = len(gone.notes) - edits
+        lines.append(f"- {n} Note{_s(n)} an agent left from it")
     copies = " and ".join(dict.fromkeys(_outside(s) for s in found))
     secret = next((w for w in SECRETS if re.search(rf"\b{w}\b", msg.text, re.I)), None)
     lines += [f"Not removed: {copies}.",

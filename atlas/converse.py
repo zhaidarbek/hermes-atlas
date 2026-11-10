@@ -3,8 +3,8 @@ the owner writes to Atlas: claimed Telegram messages, /atlas, the CLI.
 
 Two tiers:
 1. A deterministic grammar for the replies that must never depend on a model:
-   "forget" (exact, only with a pending plan), "apply" (latest pending hand edit of
-   profile.md -> ApplyNote), "<n> done|skip|prompt", bare "prompt" right after a
+   "forget" (exact, only with a pending plan), "apply" (the hand edit of profile.md, or agent
+   change Atlas refused, that the latest offer named -> ApplyNote), "<n> done|skip|prompt", bare "prompt" right after a
    resume answer (D Q2), "close it",
    "continue|park|drop" with a decision pending, "remind me <weekday|date>", "pause [until ...]",
    "I'm back". The brief or Review being replied to gives the numbers their meaning.
@@ -32,7 +32,7 @@ done" or a skip is that Step's detail ("skip 2, not today", "2 done. tablet app,
 any other clause must read, or the message is UNREAD, and so is a message with no clause at all.
 Numbers name the Steps of the brief replied to, else of the latest brief the owner was sent.
 "profile: <words>" is one CorrectProfile, the model reading the words against the Profile, and
-"apply" names the latest hand edit of the Profile not yet applied. The rest of the model tier reads
+"apply" names the hand edit of the Profile, or agent change Atlas refused, that the latest offer named. The rest of the model tier reads
 only the corrections to filing (MODEL_READS), only those the owner's words ask for (ASKED_BY), and
 only words the grammar left UNREAD: words that ask for none make no model call. An UNREAD or
 AMBIGUOUS message is not Atlas's yet, and goes to Hermes's agent, which has
@@ -51,7 +51,7 @@ from . import forget, neglect, pausing
 from .librarian import CONVERSE, Librarian, Llm, ModelError, ask
 from .messages import RESUME_HINT
 from .model import (AddArea, ApplyNote, Area, BriefStep, Command, Continue, EndingProposal, EndPause, FindQ,
-                    HoldDecision, HoldStep, MarkStep, Merge, NeglectedQ, NoteOrigin, OutsideAction, OwnerMessage,
+                    HoldDecision, HoldStep, MarkStep, Merge, NeglectedQ, Note, NoteOrigin, OutsideAction, OwnerMessage,
                     PauseCmd, PeriodTimeQ, Pursuit, Query, ResumePromptQ, ResumeQ, SendStatus, SentBrief, SetArea,
                     SetStatus, Split, Status, WhichQ)
 from .record import Snapshot
@@ -114,15 +114,23 @@ def _grammar(msg: OwnerMessage, snap: Snapshot) -> Interpretation:
     return Interpretation(commands, tuple(r for r in read if isinstance(r, queries)), False, None)
 
 
+def offered_last(snap: Snapshot) -> Note | None:
+    """The Note the latest "apply" offer named, while it waits to be applied."""
+    offers = [n for n in snap.notes() if n.origin is NoteOrigin.OWNER and n.offer is not None]
+    latest = max(offers, key=lambda n: n.at, default=None)
+    return next((n for n in snap.pending_applies() if latest is not None and n.id == latest.offer), None)
+
+
 def _whole(text: str, snap: Snapshot, librarian: Librarian | None) -> Interpretation | None:
     """A message read as one command whatever its sentences: "profile: <words>", whose words the
-    model reads against the Profile, and "apply", the latest hand edit of the Profile not yet
-    applied. None for any other message."""
+    model reads against the Profile, and "apply", the hand edit of the Profile or the agent change
+    Atlas refused that its latest offer named, while it waits. None for any other message."""
     if _APPLY.fullmatch(text.strip()):
-        edits = [n for n in snap.pending_applies() if n.origin is NoteOrigin.HAND_EDIT and n.via == PROFILE_FILE]
-        if not edits or librarian is None:
+        offered = offered_last(snap)
+        if offered is None or (offered.origin is NoteOrigin.HAND_EDIT and (
+                offered.via != PROFILE_FILE or librarian is None)):
             return Interpretation((), (), False, UNREAD)
-        return Interpretation((ApplyNote(edits[-1].id),), (), False, None)
+        return Interpretation((ApplyNote(offered.id),), (), False, None)
     m = _PROFILE.fullmatch(text.strip())
     if m is None:
         return None

@@ -161,9 +161,19 @@ def test_a_card_written_before_cards_kept_their_one_off_day_reads_with_none():
 
 def test_a_value_the_format_has_no_place_for_is_refused_not_dropped():
     note = Note("nt-1", datetime(2026, 11, 15, 20, 39, tzinfo=TZ), NoteOrigin.REFUSED_UPDATE, "claude_code",
-                "close it", pending=SetStatus("Greenhouse logger", Status.DONE))
+                "close it")
     with pytest.raises(_codec.Unrepresentable):
         _codec.render("notes", _codec.NotesFile(date(2026, 11, 15), "claude_code", (_codec.NoteEntry(note),)), TZ)
+
+
+def test_a_refused_update_reads_back_as_the_owner_words_an_agent_passed_with_the_change_kept():
+    note = Note("nt-1", datetime(2026, 11, 15, 20, 39, tzinfo=TZ), NoteOrigin.REFUSED_UPDATE, "devin",
+                "close it", atlas_reply="Not applied.", pending=SetStatus("Greenhouse logger", Status.DONE),
+                derived_from=("dv-1",), cwd="~/home/greenhouse")
+    nf = _codec.NotesFile(date(2026, 11, 15), "devin", (_codec.NoteEntry(note),))
+    text = _codec.render("notes", nf, TZ)
+    assert b"Devin, on your words: close it\nAtlas: Not applied." in text
+    assert _codec.parse("notes", text, TZ) == nf
 
 
 def test_body_times_are_wall_time_in_the_settings_zone_and_read_back_as_the_same_instant():

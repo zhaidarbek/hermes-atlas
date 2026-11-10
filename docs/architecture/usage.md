@@ -286,21 +286,23 @@ agentapi.call("atlas_note", {"text": "Decided to log every 5 minutes ...", "purs
   the librarian files the Note on the next tick like any Evidence ⇒ Decided line [F Note from Claude Code · nt-…]
 
 agentapi.call("atlas_update", {"pursuit": "Greenhouse logger",
-     "change": {"resume_note": {"remove_open_question": "card filling up",
-                                "add_decided": "At 5-minute logging the card lasts about 3 years"}},
+     "change": {"remove": ["the card filling up"], "add_decided": true}},   # the agent only asks (told.Asked)
      "owner_words": "tell atlas the open question is settled: at 5-minute logging the card lasts about 3 years"}, caller)
   caller.authority(owner_words)
      sources.bind_caller(caller)        → BoundSession(claude_code, <ns>, <sessionId>)   # ~/.claude/sessions/<ppid>.json
      # Codex instead: caller.call_meta["threadId"] → ~/.codex/sessions/…/rollout-*-<threadId>.jsonl  (ADR 0010, G2)
      sources.find_instruction(bound, owner_words)
                                         → Instruction(...)   # the prompt is already in that Session's .jsonl
-  atlas.act(EditResumeNote(...), Agent("claude_code", bound, instruction))
+  told.owners(pursuit, pursuits listing the Session, instruction.text, asked)
+     → EditResumeNote(remove=("does the 32 GB card fill up before spring?",),
+                      add_decided=("The open question is settled: at 5-minute logging the card lasts about 3 years.",))
+     # the Decided line is the owner's message without its address; the only Open question goes because the message says it is settled
   rules.authorize: EditResumeNote.allowed ∋ AGENT_TOLD, instruction present → apply now
      ⇒ pursuit file + History "Changed by Claude Code on your instruction: \"tell atlas the open question is settled…\" [F Claude Code · Tue 21:24 · cc-…]"
 → "Updated the Resume Note of Greenhouse logger. Removed the open question ... and added that decision."
 ```
 
-If the words are not in an owner-typed message of the calling Session, or the Harness offers no binding (Devin in v1; Codex when the call carries no `_meta.threadId` or its version is unverified, ADR 0010), `atlas_update` commits a `REFUSED_UPDATE` Note quoting the owner's words with the change as `pending`, and tells the agent so. Atlas's next answer to the owner, in any Channel, ends with `Claude Code asked to change Greenhouse logger on your words "…". Reply "apply" to make it.`; `apply` → `ApplyNote` → the change goes through `rules.decide` under Owner authority (D Q12). Nothing is applied and later reverted. An agent may end a Pursuit only when the found words name the ending ("done", "close it", "drop it"), D Q11.
+If the words are not in an owner-typed message of the calling Session, or the Harness offers no binding (Devin in v1; Codex when the call carries no `_meta.threadId` or its version is unverified, ADR 0010), `atlas_update` commits a `REFUSED_UPDATE` Note quoting the owner's words with the change as `pending`, and tells the agent so. Atlas's next answer to the owner, in any Channel, ends with the whole change, `Claude Code asked to change Greenhouse logger: remove the open question "…" and add the decision "…" Reply "apply" to make it.`; `apply` → `ApplyNote` → the change goes through `rules.decide` under Owner authority (D Q12). Nothing is applied and later reverted. An agent may end a Pursuit only when the found words name the ending ("done", "close it", "drop it"), D Q11.
 
 ---
 

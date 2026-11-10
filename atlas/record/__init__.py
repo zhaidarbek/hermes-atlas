@@ -69,7 +69,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, tzinfo
 from functools import cached_property
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import zstandard
@@ -686,11 +686,20 @@ class ChangeSet:
 
     def put_note(self, n: Note) -> "ChangeSet":
         """Writes again a Note the record holds, such as one whose "apply" was offered or made."""
-        via = "hand-edits" if n.origin is NoteOrigin.HAND_EDIT else n.via
-        path = _layout.notes_path(_codec.local(n.at, self._tz()).date(), via)
-        current = self._latest(path, "notes")
-        entries = tuple(replace(e, note=replace(n, about=None)) if e.note.id == n.id else e for e in current.entries)
-        return self._put(path, "notes", replace(current, entries=entries))
+        return self.put_notes((n,))
+
+    def put_notes(self, notes: Iterable[Note]) -> "ChangeSet":
+        """Writes again Notes the record holds, each Notes file once however many of its Notes change."""
+        by_path: dict[str, dict[EvidenceId, Note]] = {}
+        for n in notes:
+            via = "hand-edits" if n.origin is NoteOrigin.HAND_EDIT else n.via
+            by_path.setdefault(_layout.notes_path(_codec.local(n.at, self._tz()).date(), via), {})[n.id] = n
+        for path, changed in by_path.items():
+            current = self._latest(path, "notes")
+            entries = tuple(replace(e, note=replace(changed[e.note.id], about=None)) if e.note.id in changed else e
+                            for e in current.entries)
+            self._put(path, "notes", replace(current, entries=entries))
+        return self
 
     def remove_note(self, n: Note) -> "ChangeSet":
         """Takes a Note the record holds out of its Notes file, and the file away once it holds no other."""

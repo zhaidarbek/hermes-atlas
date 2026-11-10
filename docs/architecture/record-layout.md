@@ -351,6 +351,8 @@ Atlas: Split. "Billing export: staging deploy" (project) has 4 Sessions. ...
 atlas: notes/1
 day: 2026-11-17
 via: claude_code
+entries:
+  nt-7v1x0b9e: {derived_from: [cc-7hht4lnaqti7efqr]}
 sealed: sha256:91bb…
 ---
 # Notes · Tuesday 17 November 2026 · from Claude Code
@@ -358,6 +360,28 @@ sealed: sha256:91bb…
 ### 21:20 · nt-7v1x0b9e · about: Greenhouse logger · cwd: ~/home/greenhouse
 Claude Code: Decided to log every 5 minutes instead of every minute, to save the SD card.
 ```
+
+An agent's Note names the Session it came from in `derived_from` when Atlas could tell which Session called (`sources.bind_caller`), so forgetting that Session removes the Note. The agent's text is masked and at most 400 characters, and it is always the agent's line, never `Atlas:`.
+
+## notes/2026/11/2026-11-17-devin.md (an agent's change Atlas could not confirm)
+
+```markdown
+---
+atlas: notes/1
+day: 2026-11-17
+via: devin
+entries:
+  nt-4q8w2m5r: {pending: {command: EditResumeNote, pursuit: p-6r2t, remove: [], add_decided: [Keep the 32 GB card.], add_left_off: [], add_open: [], next_step: null}}
+sealed: sha256:7c21…
+---
+# Notes · Tuesday 17 November 2026 · from Devin
+
+### 21:40 · nt-4q8w2m5r · about: Greenhouse logger · cwd: ~/home/greenhouse/firmware
+Devin, on your words: tell atlas we decided to keep the 32 GB card for now
+Atlas: Not applied: I could not confirm these words in that Session. Reply "apply" to make the change.
+```
+
+The line names the Harness and quotes the owner's words the agent passed; `pending` keeps the change, which "apply" makes under the owner's authority. Atlas's next answer in any Channel offers it once (`offered: true` then), the owner's Note of that answer names it in `offer`, and "apply" makes the change the latest `offer` names and adds `applied: true`. A Harness has at most three such Notes waiting; Atlas keeps no fourth.
 
 ## notes/2026/11/2026-11-20-hand-edits.md
 
@@ -402,7 +426,7 @@ The gateway sends each `Atlas:` reply, and Hermes v0.23.0 gives Atlas no message
 
 Each open, tick and commit checks the seal of every record file outside `evidence/` that has a last-written copy (no stat cache yet: a Snapshot reads those files anyway) and puts back one whose seal fails or that was deleted, from that copy read and written again through the codec, so it comes back masked. An edited file becomes a hand-edit Note in the same commit; a deleted file is put back without one. A file with no last-written copy is one Atlas did not write: the check never reads, moves or deletes it. A path with a link in it, at the file or at a folder above it, is passed over, and nothing is put back while a link stands where the hand-edits Notes file goes. Editor droppings (`.*`, `*~`, `*.swp`, `*.tmp`, `#*#`) are never hand edits. Atlas's next answer offers "apply" once for each hand-edit Note. Not yet: `card.md`, `session.md` and raw parts, which a fold still leaves as they are.
 
-`entries:` holds, by Note id, the fields Atlas keeps for a Note that differ from their defaults: `platform_ref` (`<platform>:<chat>[:<thread>]:<message id>`, a forum's General topic written as the chat itself, the chat included because a Telegram message id is unique only within its chat, so a redelivered message stays one Note), `offered: true` (Atlas has offered "apply"), `applied: true` ("apply" made the change), `derived_from` (the Evidence the edited file or Atlas's last-written copy of it cites, so Forget of one of those Sessions removes the whole Note, the edit typed there with it) and `pending` (the change "apply" would make, as `{command: <name>, <its fields>}`).
+`entries:` holds, by Note id, the fields Atlas keeps for a Note that differ from their defaults: `platform_ref` (`<platform>:<chat>[:<thread>]:<message id>`, a forum's General topic written as the chat itself, the chat included because a Telegram message id is unique only within its chat, so a redelivered message stays one Note), `offered: true` (Atlas has offered "apply"), `offer` (on the owner's Note: the Note Atlas's answer offered to "apply", which a later "apply" makes), `applied: true` ("apply" made the change), `derived_from` (the Evidence the edited file or Atlas's last-written copy of it cites, so Forget of one of those Sessions removes the whole Note, the edit typed there with it) and `pending` (the change "apply" would make, as `{command: <name>, <its fields>}`).
 
 ## evidence/codex/2026/10/cx-kxmhgr73ardh6q4s/session.md
 

@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Protocol, Sequence
 
-from ..model import (BoundSession, EvidenceId, HarnessId, Instruction, Sent, SessionEvidence, Settings, part_file,
+from ..model import (EvidenceId, HarnessId, Sent, SessionEvidence, Settings, part_file,
                      part_origin, skip_key)
 from ..record import Held, HeldSession
 
@@ -321,36 +321,9 @@ def _forms(path: str) -> set[Path]:
         return {Path(os.path.normpath(full))}
 
 
-def bind_caller(caller: "object") -> "BoundSession | None":
-    """Resolve the live Session an agent tool call comes from, from the calling process.
-    - hermes:      caller.hermes_session (the session_id kwarg Hermes passes to tool handlers).
-    - claude_code: ~/.claude/sessions/<parent_pid>.json holds sessionId and cwd for a live
-                   Claude Code process (structure verified on Linux, 2026-11-08).
-    - codex:       caller.call_meta["threadId"], which Codex adds to every tools/call (the
-                   agent writes only arguments) -> the rollout file
-                   ~/.codex/sessions/YYYY/MM/DD/rollout-*-<threadId>.jsonl (ADR 0010, G2).
-                   Verified live with codex exec 0.167.0, resume included. Only for Codex
-                   versions the adapter has verified; otherwise None. The TUI and T3 Code's
-                   app server are checked before release (D Q12).
-    - devin:       None in v1: Devin sends no Session id (D Q12, G2).
-    Unknown Harness or no match -> None: the update becomes a REFUSED_UPDATE Note quoting the
-    owner's words, which "apply" makes through Atlas (D Q12)."""
-    raise NotImplementedError
-
-
-def find_instruction(bound: "BoundSession", owner_words: str) -> "Instruction | None":
-    """Read the bound Session's newest owner-typed messages straight from the Harness store
-    (same owner-message predicate as collection) and look for owner_words (normalized,
-    substring or close paraphrase checked by exact token overlap, no model). Returns a sealed
-    Instruction, the only way one is built. `Instruction.names_ending` is set when those words
-    themselves name an ending ("done", "finished", "close it", "drop it" and the like, D Q11);
-    rules.authorize requires it for SetStatus(DONE|DROPPED) from an agent. A Step being done is
-    not enough."""
-    raise NotImplementedError
-
-
 from ._adapters import ADAPTERS, T3_CODE, T3Code, defaults, linked  # noqa: E402  (the adapters build on the types above)
 from ._fold import _top, resolve  # noqa: E402
+from ._caller import Calling, bind_caller, find_instruction  # noqa: E402
 from . import _webchat as webchat  # noqa: E402
 
 STORE_HARNESSES = tuple(ADAPTERS)

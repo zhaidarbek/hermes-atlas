@@ -118,3 +118,14 @@ def test_the_readme_says_not_built_of_a_surface_exactly_while_it_is_a_stub():
     wrong = {name: stub for name, stub in stubs.items()
              if not rows_naming(name) or any(("not built" in row.lower()) != stub for row in rows_naming(name))}
     assert wrong == {}
+
+
+def test_the_readme_says_what_the_agent_tools_and_their_server_do_now():
+    rows = {line.split("|")[2].strip(): line.split("|")[3].strip() for line in README.splitlines()
+            if line.startswith("| ") and line.count("|") == 4}
+    tools = ", ".join(f"`{t.name}`" for t in agentapi.TOOLS)
+    assert "not built" not in rows[tools] and "not built" not in rows["`hermes atlas mcp`"]
+    assert "no network port" in rows["`hermes atlas mcp`"]
+    risky = README.split("## What Atlas does on your machine", 1)[1].split("\n## ", 1)[0]
+    assert "Lets your agents read and write your record" in risky and '"apply"' in risky
+    assert all(f in risky for f in ("~/.claude/sessions/<pid>.json", "/proc/<pid>/stat", "ADR 0010", "Forget does not"))

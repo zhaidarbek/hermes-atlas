@@ -101,6 +101,14 @@ def apply_offer(path: str) -> str:
     return f'You edited {path} by hand. I put it back and kept your text as a Note. Reply "apply" to make the change.'
 
 
+def update_offer(harness: str, pursuit: str, remove: Sequence[str], decided: Sequence[str]) -> str:
+    """The once-only offer, in Atlas's next answer, of an agent's change Atlas could not confirm,
+    showing the whole change "apply" makes (D Q12)."""
+    shown = [f'remove the open question "{q}"' for q in remove] + [f'add the decision "{d}"' for d in decided]
+    said = " and ".join(shown)
+    return f'{harness} asked to change {pursuit}: {said}{"" if said[-2:-1] in ".?!" else "."} Reply "apply" to make it.'
+
+
 def prompt_hint(steps: int) -> str:
     """The brief's last Steps line (D Q2: no buttons)."""
     asks = [f'"{n} prompt"' for n in range(1, steps + 1)]

@@ -41,7 +41,7 @@ AUXILIARY_TASKS = (
 
 def register(ctx) -> None:
     from . import agentapi, channel
-    agentapi.register_hermes_tools(ctx)
+    agentapi.register_hermes_tools(ctx, lambda: _atlas(ctx), _now)
     listener = channel.Listener(lambda: _atlas(ctx), _now)
     ctx.register_hook("pre_gateway_dispatch", listener.note_inbound)
     ctx.register_hook("post_gateway_admission", listener.claim)
@@ -87,7 +87,7 @@ def _tick(atlas, args) -> int:
 
 def _mcp(atlas, args) -> int:
     from . import agentapi
-    agentapi.serve_mcp()
+    agentapi.serve_mcp(atlas, _now)
     return 0
 
 
@@ -105,7 +105,7 @@ SUBCOMMANDS = {
     "setup": ("Find your Harnesses, create the record and schedule the tick", _setup),
     "backfill": ("Build your Pursuits from the Sessions already on this machine", _backfill),
     "tick": ("Collect, file and send what is due (run by the atlas-tick cron job)", _tick),
-    "mcp": ("Serve atlas_read, atlas_note and atlas_update over stdio MCP", _mcp),
+    "mcp": ("Serve atlas_read, atlas_note and atlas_update to one Harness over stdio MCP", _mcp),
     "reindex": ("Rebuild the disposable index from the record", _reindex),
     "status": ("Show what Atlas did last", _not_built),
 }

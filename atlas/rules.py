@@ -22,12 +22,12 @@ from . import activetime, ask, messages, neglect, pausing
 from .activetime import TimedSession, Work
 from .librarian import Grouping, JournalLines, PursuitDraft
 from .model import (ONE_OFF, Actor, AddArea, Answer, ApplyNote, Area, Authority, BoardView, BriefStep, Card, Cite,
-                    Command, Continue, CorrectProfile, Coverage, DayTime, Done, EndingProposal, EndPause, EvidenceId,
+                    Command, Continue, CorrectProfile, Coverage, DayTime, Done, EditResumeNote, EndingProposal, EndPause, EvidenceId,
                     Fact, FocusProposal, Followup, HistoryId, HistoryLine, HoldDecision, HoldStep, Inference,
                     JournalDay, Librarian, MarkSeen, MarkStep, Merge, Note, NoteOrigin, OutsideAction, Outcome, Owner,
                     OwnerMessage, Pause, PauseCmd, Profile, ProfileEntry, Pursuit, PursuitId, Query, ResumePromptQ,
                     ResumeQ, SendAttempt, SendStatus, SentBrief, SentRef, SentReview, SetArea, SetFocus, SetStatus,
-                    Settings, Skipped, Split, Status, Step, StepId, Who, cites, harness_of, resend)
+                    Settings, Skipped, Split, Statement, Status, Step, StepId, Who, HarnessId, cites, harness_of, resend)
 from .record import ChangeSet, ForgetPlan, Snapshot
 
 log = logging.getLogger(__name__)
@@ -214,9 +214,60 @@ def _continue(p: Pursuit, cmd: Continue, said: Cite) -> tuple[Pursuit, str]:
     return p, f"{p.name}: {ACTIVE_AGAIN if parked else reply}"
 
 
+RESUME_EDITED = "Changed the Resume Note."
+_WORD = re.compile(r"[^\W_]+")
+
+
+def words(text: str) -> list[str]:
+    """A text's words as an agent's change is checked against the owner's: casefolded runs of
+    letters and digits, so "5-minute" is "5" and "minute"."""
+    return _WORD.findall(text.casefold())
+
+
+def _stem(word: str) -> str:
+    for ending in ("ing", "ed", "s"):
+        if word.endswith(ending) and len(word) - len(ending) >= 3:
+            return word[:-len(ending)]
+    return word
+
+
+def named(text: str, lines: Sequence[Statement]) -> list[Statement]:
+    """The lines `text` names: every word of it is a word of the line, each taken without an
+    ending "ing", "ed" or "s", so "the card filling up" names "does the 32 GB card fill up before
+    spring?"."""
+    said = {_stem(w) for w in words(text)}
+    return [s for s in lines if said and said <= {_stem(w) for w in words(s.text)}]
+
+
+def edit_resume(p: Pursuit, cmd: EditResumeNote, said: Cite) -> tuple[Pursuit, list[Statement] | None]:
+    """The Resume Note without the Open question each `remove` text is, and with `add_decided` as
+    Decided lines resting on `said`. Also the Open questions removed, or None, with the Pursuit
+    unchanged, when one of them is no longer there."""
+    r = p.resume
+    gone = [[s for s in r.open_questions if s.text == text] for text in cmd.remove]
+    if any(len(g) != 1 for g in gone):
+        return p, None
+    removed = [g[0] for g in gone]
+    edited = replace(r, decided=(*r.decided, *(Fact(text, said) for text in cmd.add_decided)),
+                     open_questions=tuple(s for s in r.open_questions if s not in removed))
+    return replace(p, resume=edited), removed
+
+
+def _edit_resume_note(p: Pursuit, cmd: EditResumeNote, said: Cite) -> tuple[Pursuit, str]:
+    """"apply" on a refused agent update: the change it kept, made by the owner's word, when each
+    Open question it removes is still there."""
+    edited, removed = edit_resume(p, cmd, said)
+    if removed is None:
+        return p, f"{p.name}: not changed. The Open question that change removes is no longer in its Resume Note."
+    shown = [f'removed the open question "{s.text}"' for s in removed]
+    shown += [f'added the decision "{d}"' for d in cmd.add_decided]
+    told = " and ".join(shown)
+    return _noted(edited, RESUME_EDITED, said), f"{p.name}: Resume Note changed. {told[:1].upper()}{told[1:]}"
+
+
 CHANGES: dict[type, Callable[[Pursuit, Command, Cite], tuple[Pursuit, str]]] = {
     MarkStep: _mark_step, HoldStep: _hold_step, HoldDecision: _hold_decision, SetStatus: _set_status,
-    Continue: _continue, SetFocus: _set_focus}
+    Continue: _continue, SetFocus: _set_focus, EditResumeNote: _edit_resume_note}
 """How the owner's word changes one Pursuit, by Command type: the new Pursuit and the line Atlas answers."""
 
 
@@ -291,8 +342,11 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
     commit (ask). An OutsideAction is refused with its own line, and the rest of the message
     still stands. A ResumeQ answer makes the Note about its Pursuit, so a bare "prompt" next
     finds it; the Note changes no Pursuit. The reply ends with one "apply" offer, for the latest
-    file Atlas put back, when any it put back has not been offered yet (W Q15). `prework` holds,
-    for each Split, the new Pursuit's draft (librarian.partition)."""
+    file Atlas put back or agent change it refused, when any has not been offered yet (W Q15,
+    D Q12); the owner's Note records the one it named, which "apply" then makes, and every Note
+    not yet offered is marked offered in one write per Notes file. A change "apply" makes is
+    stamped with the time of "apply". `prework` holds, for each Split, the new Pursuit's draft
+    (librarian.partition)."""
     earlier = redelivered(snap, msg.platform_ref)
     if earlier is not None:
         return Decision(snap.changes(), Outcome(True, (earlier.atlas_reply,)))
@@ -332,14 +386,16 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
                     return Decision(snap.changes(), Outcome(False, (), f"FILING: {type(stale).__name__}"))
             else:
                 p = desk.pursuit(change.pursuit)
-                desk.changed[p.id], line = _change(p, change, *said)
+                desk.changed[p.id], line = _change(p, change, said[0], note.at)
             lines += [line] if line else []
     lines += [resume_prompt(snap, q).data if isinstance(q, ResumePromptQ) else answers[q] for q in asks]
     about = next((q.pursuit for q in asks if isinstance(q, ResumeQ)), None)
-    unoffered = [n for n in snap.pending_applies()
-                 if n.origin is NoteOrigin.HAND_EDIT and not n.offered and n.id not in kept]
-    if unoffered:
-        lines.append(messages.apply_offer(unoffered[-1].via))
+    unoffered = [n for n in snap.pending_applies() if not n.offered and n.id not in kept]
+    offer = unoffered[-1] if unoffered else None
+    if offer is not None:
+        lines.append(messages.apply_offer(offer.via) if offer.origin is NoteOrigin.HAND_EDIT else
+                     messages.update_offer(HarnessId(offer.via).label, desk.pursuit(offer.pending.pursuit).name,
+                                           offer.pending.remove, offer.pending.add_decided))
     kept.update((n.id, replace(n, offered=True)) for n in unoffered)
     cs = snap.changes()
     held = {p.id: p for p in snap.pursuits()}
@@ -354,9 +410,8 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
         cs.put_profile(profile)
     if pauses is not None and pauses != pausing.kept(snap.pauses):
         cs.put_pauses(pauses)
-    for n in kept.values():
-        cs.put_note(n)
-    cs.append_note(replace(note, atlas_reply="\n".join(lines), about=about))
+    cs.put_notes(kept.values())
+    cs.append_note(replace(note, atlas_reply="\n".join(lines), about=about, offer=offer.id if offer else None))
     return Decision(cs, Outcome(True, tuple(lines)))
 
 

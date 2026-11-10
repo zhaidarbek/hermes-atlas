@@ -844,7 +844,7 @@ _NOTE_HEAD = re.compile(r"^### (?P<hm>\d{2}:\d{2}) · (?P<id>nt-\S+)(?P<extras>(
 _FENCE = re.compile(r"^(`{3,})[a-z]*$")
 _HAND_EDIT_SAYS = 'Someone edited {path} outside Atlas. Atlas put it back. Reply "apply" to make this change through Atlas.'
 _AS_EDITED = "The file as it was edited:"
-_ENTRY_FIELDS = ("platform_ref", "offered", "applied", "derived_from", "pending")
+_ENTRY_FIELDS = ("platform_ref", "offered", "applied", "derived_from", "pending", "offer")
 
 
 def _file_title(via: str) -> str:
@@ -853,8 +853,14 @@ def _file_title(via: str) -> str:
     return f"from {HarnessId(via).label}"
 
 
+ON_YOUR_WORDS = ", on your words"
+"""How a refused update's Note names who asked: "Devin, on your words: <the owner's words>"."""
+
+
 def _speaker(n: Note) -> str:
-    return "You" if n.origin is NoteOrigin.OWNER else HarnessId(n.via).label
+    if n.origin is NoteOrigin.OWNER:
+        return "You"
+    return HarnessId(n.via).label + (ON_YOUR_WORDS if n.origin is NoteOrigin.REFUSED_UPDATE else "")
 
 
 def _said(who: str, text: str) -> list[str]:
@@ -881,6 +887,8 @@ def _note_entry(n: Note, tz: tzinfo | None) -> dict:
         out["applied"] = True
     if n.derived_from:
         out["derived_from"] = n.derived_from
+    if n.offer is not None:
+        out["offer"] = n.offer
     if n.pending is not None:
         out["pending"] = {"command": type(n.pending).__name__,
                           **{f.name: getattr(n.pending, f.name) for f in fields(n.pending)}}
@@ -893,6 +901,8 @@ def _parse_note_entry(row: dict, tz: tzinfo | None) -> dict:
     out = dict(row)
     if "derived_from" in row:
         out["derived_from"] = tuple(EvidenceId(e) for e in row["derived_from"])
+    if "offer" in row:
+        out["offer"] = EvidenceId(row["offer"])
     if "pending" in row:
         args = dict(row["pending"])
         name = args.pop("command")
@@ -904,8 +914,10 @@ def _parse_note_entry(row: dict, tz: tzinfo | None) -> dict:
 
 def _said_block(e: NoteEntry, at: datetime) -> list[str]:
     n = e.note
-    if n.origin not in (NoteOrigin.OWNER, NoteOrigin.AGENT):
+    if n.origin not in (NoteOrigin.OWNER, NoteOrigin.AGENT, NoteOrigin.REFUSED_UPDATE):
         raise Unrepresentable(f"a {n.origin.value} Note: the record format has no body for it")
+    if n.origin is NoteOrigin.REFUSED_UPDATE and n.pending is None:
+        raise Unrepresentable("a refused update's Note keeps the change it would make")
     if n.diff is not None:
         raise Unrepresentable("a diff on a Note that is not a hand edit")
     head = f"### {at:%H:%M} · {n.id}"
@@ -1000,7 +1012,9 @@ def _parse_said(m: re.Match, lines: list[str], via: str) -> tuple[dict, str | No
     reply = None
     if len(said) > 1:
         reply = "\n".join([said[1][0].removeprefix("Atlas: "), *said[1][1:]])
-    return ({"origin": NoteOrigin.OWNER if speaker == "You" else NoteOrigin.AGENT, "via": via,
+    origin = (NoteOrigin.OWNER if speaker == "You" else NoteOrigin.REFUSED_UPDATE if speaker.endswith(ON_YOUR_WORDS)
+              else NoteOrigin.AGENT)
+    return ({"origin": origin, "via": via,
              "text": "\n".join([first, *said[0][1:]]), "atlas_reply": reply, "cwd": extras.get("cwd")},
             extras.get("about"))
 
