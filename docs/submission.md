@@ -1,24 +1,37 @@
 # Hackathon submission
 
-The text for the entry. Links and anything personal stay as `<...>` placeholders until the owner fills them in.
+The text for the entry. Anything personal stays as a `<...>` placeholder for the owner to fill in.
 
 ## X post
 
-> Atlas is a Hermes plugin for one person: it reads the Sessions your AI coding agents already keep and sends you one Telegram brief each morning with the next Step for the work you starred. <repo-url> <catalog-pr-url>
+The form requires a demo video posted on X that tags Nous Research. Attach `docs/recordings/demo-week.mp4` (88 seconds).
+
+> Atlas, my entry for the Hermes Agent Plugin Hackathon. It reads the Sessions your AI coding agents already keep, in Claude Code, Codex, Devin, Hermes and web chats, and sends you one Telegram brief each morning with the next small Step for the work you starred. The record is plain Markdown on your disk.
+>
+> The video replays a week on invented data.
+>
+> https://github.com/zhaidarbek/hermes-atlas
+>
+> @NousResearch
 
 ## The form
 
-The form is at https://form.typeform.com/to/FwJLvOln. Its page did not load from the machine this was written on (the connection timed out), so its fields could not be read. The fields below are guesses, the usual ones for a hackathon entry. Check them against the form before filling it in.
+The form is at https://form.typeform.com/to/FwJLvOln. These are its fields, read from the form's public definition on 10 November 2026. Every field is required.
 
-| Field (guess) | Answer |
+| Field | Answer |
 |---|---|
-| Project name | Atlas |
-| One-line description | A Hermes plugin that keeps track of what you are working on across your AI coding tools and sends you the next Step each morning. |
-| What it does | Atlas reads the Sessions that Claude Code, Codex, Devin, Hermes and T3 Code already keep on your machine. It groups them into Pursuits, the projects and ideas you started, and writes each Pursuit's state into a folder of Markdown files you can read without Hermes. Each morning it sends a Daily Brief in Telegram with one small Step for each Pursuit you starred, where you left off and where to resume. You answer it in plain words. |
-| Hermes surfaces it uses | CLI commands (`hermes atlas setup`, `backfill`, `tick`), a no-agent cron job (`atlas-tick`), `hermes send` to the Telegram home channel, the gateway hooks `pre_gateway_dispatch` and `post_gateway_admission`, the `/atlas` slash command, agent tools (`atlas_read`, `atlas_note`, `atlas_update`), a skill, auxiliary model tasks through `ctx.llm`, a plugin setting (`record_dir`) and a dashboard tab (the Board). |
-| Repository link | `<repo-url>` |
-| Demo video link | `<demo-video-url>` (the file is `docs/recordings/demo-week.mp4`) |
-| Plugin catalog link | `<catalog-pr-url>` |
-| Team or entrant name | `<entrant-name>` |
-| Contact email | `<contact-email>` |
-| Social handle | `<x-handle>` |
+| Plugin Title | Atlas |
+| Plugin Description | Keeps track of what you are working on across your AI coding tools and web chats, and sends you a daily Telegram brief with the next small Step for each thing you starred. Everything it knows is a folder of Markdown files on your own disk. |
+| Email Address | `<contact-email>` |
+| Discord Username | `<discord-username>` |
+| X Demo Post Link | `<x-post-url>`, the link to the post above once it is up |
+| GitHub Link to your Hermes Plugin Pull Request | https://github.com/NousResearch/hermes-agent/pull/152746 |
+
+Between the last two fields the form shows a statement asking you to submit the catalog PR first. That PR is open.
+
+## Links
+
+- Public repository: https://github.com/zhaidarbek/hermes-atlas
+- Catalog pull request: https://github.com/NousResearch/hermes-agent/pull/152746
+- Demo video: `docs/recordings/demo-week.mp4`, made by `cd tests && python -m harness.demo`
+- Demo script: `docs/demo-script.md`

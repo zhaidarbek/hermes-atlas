@@ -197,10 +197,12 @@ def replay(scene_id: str) -> Take:
         chat = without_redeliveries(home.chat)
         if chat and state["brief"]:
             lines += said("Atlas", state["brief"]) + [""]
+        sent = [["the tick sends", *said("Atlas", m["text"]), ""] for m in home.sent()[state["sent"]:]]
+        asked = [m for m in sent if "Atlas · Review" in m[1]] if chat else []
+        lines += [line for m in asked for line in m]
         for speaker, text in chat:
             lines += said(speaker, text)
-        for message in home.sent()[state["sent"]:]:
-            lines += ["the tick sends", *said("Atlas", message["text"]), ""]
+        lines += [line for m in sent if m not in asked for line in m]
         if state["board"]:
             lines += board_text(home.dashboard("GET", "/board").json())
         if not lines:
