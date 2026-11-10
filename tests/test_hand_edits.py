@@ -195,6 +195,7 @@ def test_apply_changes_the_profile_on_the_hand_edit_note_and_marks_it_applied(re
     assert applied.outcome.lines == ('Changed: "You do invented Steps at night." [F your Note, Fri 08:50]',)
     assert snap.profile().entries[1].statement.source.evidence == note.id
     assert snap.pending_applies() == []
+    assert list(snap.profile_corrections()) == [WRONG]
 
 
 def test_profile_words_and_apply_are_unread_without_a_model_or_an_offer(record):

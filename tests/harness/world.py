@@ -44,7 +44,7 @@ FIND_AT = datetime(2026, 11, 19, 12, 10, tzinfo=TZ)        # Thursday's question
 OUTSIDE_AT = datetime(2026, 11, 19, 12, 20, tzinfo=TZ)     # "atlas, send Dana ..." (scene 24)
 WEEK_TIME_AT = datetime(2026, 11, 22, 18, 40, tzinfo=TZ)   # after Sunday's Review: time by Area (scene 37)
 RESUME_AT = datetime(2026, 11, 22, 18, 45, tzinfo=TZ)      # "where did I leave off on the keyboard firmware?" (38)
-REACTIVATED_AT = datetime(2026, 11, 22, 17, 0, tzinfo=TZ)   # "by evening", after the keyboard build Session
+REACTIVATED_AT = datetime(2026, 11, 22, 21, 0, tzinfo=TZ)   # "by evening", after the Codex build of 18:46
 WEEK_START = datetime(2026, 11, 15, 19, 0, tzinfo=TZ)
 WEEK_END = datetime(2026, 11, 22, 23, 59, tzinfo=TZ)
 
@@ -52,7 +52,7 @@ PASTED_PASSWORD = "Lantern7-invented"      # scene 30: masked in every derived t
 PLANTED = "the quartz heron rollout"       # scene 30: words only the Session to forget holds
 CC, CX, DV, HM = HarnessId.CLAUDE_CODE, HarnessId.CODEX, HarnessId.DEVIN, HarnessId.HERMES
 GPT, CAI = HarnessId.CHATGPT, HarnessId.CLAUDE_AI
-EXPORTS_AT = datetime(2026, 11, 18, 9, 0, tzinfo=TZ)       # the tick after the owner drops both exports (scene 16)
+EXPORTS_AT = datetime(2026, 11, 18, 15, 30, tzinfo=TZ)     # the tick after the owner drops both exports (scene 16)
 SUNDAY_PROMPT_AT = datetime(2026, 11, 22, 10, 55, tzinfo=TZ)  # "1 prompt" on Sunday's knee Step (scene 35)
 SUNDAY_DONE_AT = datetime(2026, 11, 22, 11, 40, tzinfo=TZ)   # "1 done", after the claude.ai Session
 AFTER_SUNDAY = datetime(2026, 11, 23, 0, 10, tzinfo=TZ)      # the tick that writes Sunday's Journal day
@@ -186,7 +186,10 @@ SESSIONS: tuple[WorldSession, ...] = (
     _s(CC, "2026-11-16 13:10", 10, "invoice number regex", "~/work/payments-api", engaged=True),
     _s(CC, "2026-11-16 21:00", 105, "per-invoice vat rounding", "~/work/billing-export", branch="pdf-vat",
        interface="T3 Code", engaged=True),
-    _s(CC, "2026-11-17 21:10", 15, "greenhouse log interval", "~/home/greenhouse/firmware"),
+    _s(CX, "2026-11-17 10:00", 50, "xdist redis isolation", "~/work/payments-api", branch="fix/retry-flake"),
+    _s(CC, "2026-11-17 20:00", 30, "reading tracker paper or tablet", "~/family/reading"),
+    _s(CC, "2026-11-17 21:10", 15, "greenhouse log interval", "~/home/greenhouse/firmware",
+       said=((5, "The last 20 lines show the logger writes every minute."),)),
     _s(CC, "2026-11-18 10:12", 30, "rotate staging db password", "~/work/billing-export", branch="deploy-staging"),
     _s(CX, "2026-11-18 11:00", 15, "rotate staging db password again", "~/work/billing-export",
        branch="deploy-staging"),
@@ -194,18 +197,22 @@ SESSIONS: tuple[WorldSession, ...] = (
     _s(CX, "2026-11-18 15:35", 40, "suite 50 runs per worker", "~/work/payments-api", branch="fix/retry-flake",
        said=((30, "test_retry passed 50 of 50 runs with a Redis db per worker."),)),
     _s(HM, "2026-11-18 19:30", 10, "dinner plan", "~", source="telegram"),
-    _s(CX, "2026-11-19 08:10", 30, "flake fix merged", "~/work/payments-api", branch="fix/retry-flake"),
+    _s(CC, "2026-11-18 21:00", 20, "greenhouse five minute logging", "~/home/greenhouse/firmware"),
+    _s(CX, "2026-11-19 06:40", 30, "flake fix merged", "~/work/payments-api", branch="fix/retry-flake"),
     _s(CX, "2026-11-19 14:02", 20, "staging deploy config", "~/work/billing-export", branch="deploy-staging",
        pasted=f"the staging db password is {PASTED_PASSWORD}", said=((10, f"Config set for {PLANTED}."),)),
+    _s(CC, "2026-11-20 09:00", 30, "pdf per-invoice rerun", "~/work/billing-export", branch="pdf-vat",
+       said=((15, "October reran with per-invoice rounding; the PDF totals match the ledger."),)),
     _s(CC, "2026-11-20 21:05", 25, "greenhouse evening check", "~/home/greenhouse/firmware"),
-    _s(CC, "2026-11-22 09:30", 40, "keyboard debounce 10 ms", "~/code/kb-firmware"),
+    _s(CX, "2026-11-22 18:46", 40, "keyboard debounce 10 ms", "~/code/kb-firmware", branch="split-right"),
 )
 
 
 # How the scripted model (harness/model.py) groups the Sessions when backfill builds the Pursuits:
 # each Pursuit on the tutorial's Board with its Area and Sessions, and the one-off Sessions with
 # theirs. Names, Kinds, Left off and Next lines are read from the tutorial's Board. The Areas are
-# setup's three, because "home" comes with scene 5.
+# setup's three, because "home" comes with scene 5. BACKFILL_RESUME gives the rest of a Resume
+# Note as the later scenes read it: what was decided, the open question, and the Sessions to reopen.
 BACKFILL_PURSUITS: dict[str, tuple[str, tuple[str, ...]]] = {
     "Billing export service": ("work", ("ledger csv export", "staging deploy env vars", "pdf vat rounding")),
     "Payments CI flakes": ("work", ("payments api retries", "ci matrix", "redis db per worker", "retry flake")),
@@ -218,6 +225,14 @@ BACKFILL_PURSUITS: dict[str, tuple[str, tuple[str, ...]]] = {
     "Keyboard firmware": ("family", ("keyboard matrix scan", "split layout keymap", "qmk build", "right half drops")),
     "Static site migration": ("work", ("static site image pipeline", "move posts to astro")),
     "Pi-hole DNS loop": ("family", ("pi-hole dns loop",)),
+}
+BACKFILL_RESUME: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "Payments CI flakes": ("keep xdist; no sleeps in tests.", "does the conftest fixture flush Redis between tests?",
+                           ("retry flake", "ci matrix")),
+    "Greenhouse logger firmware": ("log to the SD card and sync to the PC hourly.",
+                                   "does the 32 GB card fill up before spring?", ("logger sd card swap",)),
+    "Keyboard firmware": ("keep QMK; no custom matrix scanning.", "is it the debounce or the TRRS cable?",
+                          ("right half drops", "qmk build")),
 }
 # Web chats reach Atlas through an export (#15), never a store: Monday's knee question, 40 minutes.
 WEB_SESSIONS: tuple[WorldSession, ...] = (
@@ -264,15 +279,23 @@ class TickFiling:
     ending: tuple[str, str] | None = None    # (done or dropped, the reason the Session shows)
     new: tuple[str, str] | None = None       # (Kind, Area): the Session starts the Pursuit
     left_at: str | None = None               # the turn the Left off quotes, when not the last
+    by_rule: bool = True                     # the model names the Pursuit's Filing rule, when it has one
 
 
 TICK_FILINGS: dict[str, TickFiling] = {
     "test_retry one worker": TickFiling("Payments CI flakes"),
     "invoice ids in payments": TickFiling("Payments CI flakes"),
     "per-invoice vat rounding": TickFiling(
-        "Billing export service", done_at="21:40", done="per-invoice rounding matches the ledger",
+        "Billing export service", left_off="CSV totals match the ledger. The PDF moves to per-invoice VAT rounding.",
+        done_at="21:40", done="per-invoice rounding matches the ledger",
         next_step="Switch the PDF export to per-invoice rounding and rerun October."),
-    "greenhouse log interval": TickFiling("Greenhouse logger"),
+    "xdist redis isolation": TickFiling(
+        "Payments CI flakes", next_step="Run the suite 50 times with a separate Redis db per xdist worker."),
+    "reading tracker paper or tablet": TickFiling(
+        "Reading tracker for the kids", next_step="Create the app and get one screen that logs a book and minutes."),
+    "greenhouse log interval": TickFiling("Greenhouse logger", done_at="21:15"),
+    "greenhouse five minute logging": TickFiling(
+        "Greenhouse logger", next_step="Check that the logger now writes every 5 minutes."),
     "rotate staging db password": TickFiling("Billing export: staging deploy"),
     "rotate staging db password again": TickFiling("Billing export: staging deploy"),
     "reading tracker app screen": TickFiling(
@@ -282,7 +305,10 @@ TICK_FILINGS: dict[str, TickFiling] = {
         "Payments CI flakes", done_at="16:05", done="test_retry passed 50 of 50 runs with a Redis db per worker",
         ending=("done", "The flake is gone in 50 of 50 runs, which is what this Pursuit was for.")),
     "flake fix merged": TickFiling("Payments CI flakes"),
-    "staging deploy config": TickFiling("Billing export: staging deploy"),
+    "staging deploy config": TickFiling(
+        "Billing export: staging deploy", left_off="The staging deploy reads its settings from env vars.",
+        by_rule=False),
+    "pdf per-invoice rerun": TickFiling("Billing export service", done_at="09:15"),
     "greenhouse evening check": TickFiling("Greenhouse logger", done_at="21:08", done="the logger writes every 5 minutes"),
     "keyboard debounce 10 ms": TickFiling("Keyboard firmware"),
     "knee pain after running": TickFiling("Knee rehab plan", new=("problem", "health")),

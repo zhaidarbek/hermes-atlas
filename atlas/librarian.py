@@ -22,7 +22,7 @@ from datetime import date, datetime, timezone
 from typing import Callable, Mapping, Protocol, Sequence, TypeVar
 from zoneinfo import ZoneInfo
 
-from . import privacy
+from . import privacy, profiling
 from .model import (Answer, Area, Cite, Command, CorrectProfile, Coverage, EvidenceId, Fact, Inference,
                     Kind, Membership, Note, ProfileEntry, Pursuit, PursuitId, ResumeNote, SessionCard, SessionEvidence,
                     Statement, Status, StepId, Turn, harness_of)
@@ -571,11 +571,31 @@ class Librarian:
         return self._ask(CONVERSE, PROFILE_EDIT, _profile(entries) + f"\n\nThe owner's edit:\n{hand_edit.diff}",
                          PROFILE_EDIT_SCHEMA, _cited(entries), read)
 
-    def profile_pass(self, snap: Snapshot, day: date | None) -> list[Command]:
+    def profile_pass(self, snap: Snapshot, day: date | None) -> tuple[profiling.NewEntry, ...]:
         """Profile entries limited to what improves the Daily Brief (R3 Q6). day=None: the whole
-        history, once, at the end of backfill. Otherwise daily, for the Journal day just closed
-        (G3). Commands run under Librarian authority; each entry records added + by."""
-        raise NotImplementedError
+        history, once, at the end of backfill. Otherwise the Journal day just closed (G3). Raises
+        Unusable for an answer it cannot use, or whatever the model call raised."""
+        profile, corrected = snap.profile(), tuple(snap.profile_corrections())
+        pursuits = snap.pursuits()
+        held = [h.id for h in snap.held().sessions()]
+        if day is None:
+            shown = {id: snap.session(id) for id in held}
+            input = profiling.history_input(profile, pursuits, shown, GROUP_BUDGET, corrected)
+            task = BACKFILL
+        else:
+            brief = snap.brief(day)
+            named = {b.pursuit for b in brief.steps} if brief else set()
+            ids = {m.evidence for p in pursuits if p.id in named for m in p.sessions}
+            zone = ZoneInfo(snap.settings().timezone)
+            shown = {s.id: s for s in map(snap.session, held) if s.id in ids or profiling.on_day(s, day, zone)}
+            journal = snap.journal(day)
+            lines = [st.text for st in journal.lines] if journal else []
+            input = profiling.day_input(profile, day, brief, {p.id: p for p in pursuits}, lines, shown, corrected,
+                                        zone=zone)
+            task = JOURNAL
+        return self._ask(task, profiling.INSTRUCTIONS, input, profiling.SCHEMA, tuple(shown),
+                         lambda out: profiling.read(out, profile, {EvidenceId(i): s for i, s in shown.items()},
+                                                    corrected))
 
 
 # ------------------------------------------------------------------ inputs

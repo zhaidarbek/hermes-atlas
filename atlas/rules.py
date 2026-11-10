@@ -408,6 +408,10 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
         profile = replace(profile or snap.profile(), areas=desk.areas)
     if profile is not None and profile != snap.profile():
         cs.put_profile(profile)
+        texts = {e.statement.text for e in profile.entries}
+        gone = {e.statement.text: cites(e.statement) for e in snap.profile().entries if e.statement.text not in texts}
+        if gone:
+            cs.set_profile_corrections({**snap.profile_corrections(), **gone})
     if pauses is not None and pauses != pausing.kept(snap.pauses):
         cs.put_pauses(pauses)
     cs.put_notes(kept.values())

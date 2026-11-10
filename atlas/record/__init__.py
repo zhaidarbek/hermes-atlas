@@ -448,6 +448,16 @@ class Snapshot:
                                int(r["sessions"]), bool(r["deleted"]), r["failure"], str(r["file"]),
                                int(r.get("broken", 0)), int(r.get("skipped", 0))) for r in json.loads(data))
 
+    def profile_corrections(self) -> Mapping[str, frozenset[EvidenceId]]:
+        """Each Profile text the owner corrected away, with the Sessions it rested on, so the
+        Profile pass never adds it again and Forget can clear it. Machinery: an unreadable store
+        reads as none."""
+        try:
+            rows = json.loads(self._read(_layout.PROFILE_CORRECTED) or b"[]")
+            return {str(r["text"]): frozenset(map(EvidenceId, r["sessions"])) for r in rows}
+        except (ValueError, KeyError, TypeError):
+            return {}
+
     def pending_applies(self) -> Sequence[Note]:
         """HAND_EDIT and REFUSED_UPDATE Notes not yet applied: what "apply" acts on. Offered once in
         Atlas's next answer (Note.offered), always listed in the Review."""
@@ -927,6 +937,11 @@ class ChangeSet:
                            for e in log if not e.deleted or e in deleted]).encode()
         return self._write(_layout.IMPORTS, data)
 
+    def set_profile_corrections(self, corrected: Mapping[str, Iterable[EvidenceId]]) -> "ChangeSet":
+        data = json.dumps([{"text": privacy.scrub(text), "sessions": sorted(ids)} for text, ids in corrected.items()],
+                          ensure_ascii=False).encode() if corrected else None
+        return self._write(_layout.PROFILE_CORRECTED, data)
+
     def mark_seen(self, marks: Mapping[PursuitId, HistoryId]) -> "ChangeSet":
         """Merged into seen.json as the commit finds it, never compared: a mark only moves forward,
         so concurrent Board posts converge instead of conflicting."""
@@ -1354,7 +1369,8 @@ class Record:
         snapshot folders."""
         tops = [self.root / path for path in (*_layout.TOP_FILES.values(), _layout.SEEN)]
         nested = [p for folder in _layout.SNAPSHOT_FOLDERS for p in (self.root / folder).glob("**/*.md")]
-        pending = (self.root / _layout.PENDING_FORGET, self.root / _layout.FILING_RETRY, self.root / _layout.IMPORTS)
+        pending = (self.root / _layout.PENDING_FORGET, self.root / _layout.FILING_RETRY, self.root / _layout.IMPORTS,
+                   self.root / _layout.PROFILE_CORRECTED)
         return [str(p.relative_to(self.root)) for p in (*tops, *nested, *pending) if p.is_file()]
 
     def _read(self, path: str) -> bytes | None:

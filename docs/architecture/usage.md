@@ -104,6 +104,15 @@ atlas.backfill(now)
     librarian.journal_lines(snapshot, day, rules.uncited(...))   # one call per new Session a Pursuit lists
     rules.journal_day(snapshot, day, time, lines)   # Conflict when a Session it counts or cites is removed
   ⇒ journal/*.md (131)
+  librarian.profile_pass(snapshot, None)            # while profile.md has no entry: one atlas_backfill call over
+                                                    # every Pursuit and Session (G3); profiling.read checks it:
+                                                    # at most 3 entries, each on Sessions shown or a Pattern drawn
+                                                    # from all of them, each placed after the entry it names;
+                                                    # a text the owner corrected away (.atlas/profile-corrected.json)
+                                                    # or shaped like the file's marks is left out
+  ⇒ profile.md entries, by Atlas, added today; a failed call leaves the Profile empty, logged
+  # the tick then runs profile_pass(snapshot, day) once for each Journal day it writes for the
+  # first time (atlas_journal task): that day's brief Steps and how they ended, its Journal lines
 → BackfillReport(sessions=977, folded=186, via_interface={"T3 Code": {...}},
                  filed=Filed(pursuits=11, active=8, parked=3, one_offs=61, active_since=15 Oct,
                              board="http://127.0.0.1:9119/atlas"),

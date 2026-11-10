@@ -32,6 +32,7 @@ PENDING_FORGET = ".atlas/pending/forget.json"   # the Forget plan waiting for "f
 FILING_RETRY = ".atlas/pending/filing.json"     # Sessions the model gave no usable filing for, and when to ask again
 IMPORTS = ".atlas/imports.json"                 # each web-chat export read: counts and outcome, no name or text
 SEEN = ".atlas/seen.json"
+PROFILE_CORRECTED = ".atlas/profile-corrected.json"   # Profile texts the owner corrected away, never added again
 
 
 def pursuit_path(id: PursuitId, slug: str) -> str:
@@ -89,7 +90,7 @@ def mirror_path(path: str) -> str:
 
 def in_snapshot(path: str) -> bool:
     """A top file, the seen marks, the pending Forget plan, or a Markdown file under the snapshot folders."""
-    return path in (*TOP_FILES.values(), SEEN, PENDING_FORGET, FILING_RETRY, IMPORTS) or (
+    return path in (*TOP_FILES.values(), SEEN, PENDING_FORGET, FILING_RETRY, IMPORTS, PROFILE_CORRECTED) or (
         path.split("/", 1)[0] in SNAPSHOT_FOLDERS and path.endswith(".md"))
 
 

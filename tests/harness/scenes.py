@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import tempfile
@@ -30,7 +29,8 @@ from atlas.record import Record, Snapshot
 from . import agent_scenes, exports, seeds, tutorial, world
 from .fake_llm import FakeLlm
 from .home import AtlasHome
-from .model import CORRECTED, STAGING, WRONG, corrections_model, filing_model, profile_model, world_model
+from .model import (CORRECTED, STAGING, WRONG, corrections_model, filing_model, profile_model, week_model,
+                    world_model)
 
 SCENE_IDS: tuple[str, ...] = ("1", "2", "3a", "3b", "3c", *map(str, range(4, 10)), "9b", *map(str, range(10, 21)),
                               "20b", *map(str, range(21, 40)))
@@ -47,6 +47,8 @@ class Scene:
     seed: Callable[[AtlasHome], None]               # scene mode only: the state the scene starts from
     step: Callable[[AtlasHome], None]               # drives entry points; raises Failed
     llm: Callable[[], FakeLlm] | None = None        # the model the scene's calls get; none by default
+    week: Callable[[AtlasHome], None] | None = None  # the step as the chained week runs it, if not `step`
+    later: tuple[str, Callable[[AtlasHome], None]] | None = None  # the week: a check after that scene, reported here
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,7 @@ def expect_all_lines(expected: str, got: str) -> None:
 
 def _setup_report_text(now: datetime) -> str:
     """The tutorial's setup report, with its full-scale counts replaced by this world's own."""
-    text = tutorial.fenced_block("Found on this machine").replace(world.MACHINE_IN_TUTORIAL, socket.gethostname())
+    text = tutorial.fenced_block("Found on this machine")
     for harness in (HarnessId.CLAUDE_CODE, HarnessId.CODEX, HarnessId.DEVIN, HarnessId.HERMES):
         count, since = world.owner_sessions(harness, now)
         text = re.sub(rf"^(\s*{re.escape(harness.label)}\s+\S+\s+)\d+ Sessions since \d+ \w+$",
@@ -138,11 +140,21 @@ def _backfill_read_text(now: datetime) -> str:
     return read + "\n" + re.sub(r"^\d+", str(len(world.via_interface(now))), interface)
 
 
+def _first_backfill(home: AtlasHome) -> tuple[str, int]:
+    """What the first `hermes atlas backfill` printed and how many model calls it made. In the
+    chained week scene 3a runs it, and scenes 3b and 3c check that same run."""
+    if "backfill" not in home.kept:
+        calls = len(home.ctx.fake_llm.calls)
+        ran = home.cli("atlas", "backfill")
+        if ran.code != 0:
+            raise Failed(f"hermes atlas backfill exited {ran.code}: {ran.err.strip()}")
+        home.kept["backfill"] = (ran.out, len(home.ctx.fake_llm.calls) - calls)
+    return home.kept["backfill"]
+
+
 def _backfill(home: AtlasHome) -> None:
-    ran = home.cli("atlas", "backfill")
-    if ran.code != 0:
-        raise Failed(f"hermes atlas backfill exited {ran.code}: {ran.err.strip()}")
-    expect_lines(_backfill_read_text(home.now), ran.out)
+    out, _ = _first_backfill(home)
+    expect_lines(_backfill_read_text(home.now), out)
 
     snap = Record.open(home.record_root).snapshot()
     held = {s.id: s for s in snap.sessions()}
@@ -166,10 +178,18 @@ def _backfill(home: AtlasHome) -> None:
             if hashlib.sha256(copy).hexdigest() != part.sha256:
                 raise Failed(f"raw/{part.name} of {mine.title!r} does not match its sha256")
 
+    _again(home, out)
+
+
+def _again(home: AtlasHome, out: str) -> None:
+    """A second backfill prints the same, asks the model nothing and changes no file."""
+    asked = len(home.ctx.fake_llm.calls)
     before = home.files()
     again = home.cli("atlas", "backfill")
-    if again.out != ran.out:
+    if again.out != out:
         raise Failed("a second backfill printed something else")
+    if len(home.ctx.fake_llm.calls) != asked:
+        raise Failed(f"a second backfill made {len(home.ctx.fake_llm.calls) - asked} model calls")
     changed = sorted(p for p in before.keys() | home.files().keys() if before.get(p) != home.files().get(p))
     if changed:
         raise Failed(f"a second backfill changed {changed}")
@@ -196,11 +216,8 @@ def _without_journal(out: str) -> str:
 
 
 def _filed(home: AtlasHome) -> None:
-    calls = len(home.ctx.fake_llm.calls)
-    ran = home.cli("atlas", "backfill")
-    if ran.code != 0:
-        raise Failed(f"hermes atlas backfill exited {ran.code}: {ran.err.strip()}")
-    expect_all_lines(_backfill_filed_text(home.now), _without_journal(ran.out))
+    out, asked = _first_backfill(home)
+    expect_all_lines(_backfill_filed_text(home.now), _without_journal(out))
 
     snap = Record.open(home.record_root).snapshot()
     ids = {s.title: seeds.evidence_id(s) for s in world.SESSIONS}
@@ -235,18 +252,9 @@ def _filed(home: AtlasHome) -> None:
     if uncarded:
         raise Failed(f"{len(uncarded)} Sessions have no card")
 
-    asked = len(home.ctx.fake_llm.calls)
-    before = home.files()
-    again = home.cli("atlas", "backfill")
-    if again.out != ran.out:
-        raise Failed("a second backfill printed something else")
-    if len(home.ctx.fake_llm.calls) != asked:
-        raise Failed(f"a second backfill made {len(home.ctx.fake_llm.calls) - asked} model calls")
-    changed = sorted(p for p in before.keys() | home.files().keys() if before.get(p) != home.files().get(p))
-    if changed:
-        raise Failed(f"a second backfill changed {changed}")
-    if asked == calls:
+    if not asked:
         raise Failed("backfill built the Pursuits without the model")
+    _again(home, out)
 
 
 # ------------------------------------------------------------------ scene 3c: backfill writes the Journal
@@ -269,10 +277,8 @@ def _backfill_text(now: datetime) -> str:
 
 
 def _journaled(home: AtlasHome) -> None:
-    ran = home.cli("atlas", "backfill")
-    if ran.code != 0:
-        raise Failed(f"hermes atlas backfill exited {ran.code}: {ran.err.strip()}")
-    expect_all_lines(_backfill_text(home.now), ran.out)
+    out, _ = _first_backfill(home)
+    expect_all_lines(_backfill_text(home.now), out)
 
     snap = Record.open(home.record_root).snapshot()
     days = _worked_days(home.now)
@@ -283,17 +289,7 @@ def _journaled(home: AtlasHome) -> None:
         wanted = {seeds.evidence_id(s) for s in world.visible(home.now) if s.title in filed and s.start.date() == day}
         if set(snap.journal(day).evidence) != wanted:
             raise Failed(f"the Journal day {day} counts other Sessions than the ones that ran that day")
-
-    asked = len(home.ctx.fake_llm.calls)
-    before = home.files()
-    again = home.cli("atlas", "backfill")
-    if again.out != ran.out:
-        raise Failed("a second backfill printed something else")
-    if len(home.ctx.fake_llm.calls) != asked:
-        raise Failed(f"a second backfill made {len(home.ctx.fake_llm.calls) - asked} model calls")
-    changed = sorted(p for p in before.keys() | home.files().keys() if before.get(p) != home.files().get(p))
-    if changed:
-        raise Failed(f"a second backfill changed {changed}")
+    _again(home, out)
 
 
 # ------------------------------------------------------------------ scene 27: the record read without Atlas
@@ -471,18 +467,30 @@ def _reply_once(home: AtlasHome, said: str, brief: str) -> str:
     return reply
 
 
+def brief_id(home: AtlasHome, day: date) -> str:
+    """The message id the day's brief was sent as, which the owner's reply quotes."""
+    kept = Record.open(home.record_root).snapshot().brief(day)
+    if kept is None or not kept.attempts or not kept.attempts[-1].message_ids:
+        raise Failed(f"no brief was sent on {day:%a %d %b} to reply to")
+    return kept.attempts[-1].message_ids[0]
+
+
+def _id(home: AtlasHome, name: str) -> str:
+    return Record.open(home.record_root).snapshot().pursuit(name).id
+
+
 def _telegram_notes(home: AtlasHome) -> list[tuple[str, str]]:
     return [(n.text, n.atlas_reply) for n in Record.open(home.record_root).snapshot().notes() if n.via == "telegram"]
 
 
 def _resume_prompt(home: AtlasHome) -> None:
-    reply = _reply_once(home, "1 prompt", seeds.MONDAY_BRIEF_ID)
+    reply = _reply_once(home, "1 prompt", brief_id(home, seeds.MONDAY))
     expect_all_lines(tutorial.fenced_block('Resuming "Payments CI flakes".'), reply)
 
 
 def _plain_words(home: AtlasHome) -> None:
     (_, said), (_, answer) = tutorial.exchange("1 done, 10/10 pass with one worker")
-    expect_all_lines(answer, _reply_once(home, said, seeds.MONDAY_BRIEF_ID))
+    expect_all_lines(answer, _reply_once(home, said, brief_id(home, seeds.MONDAY)))
     snap = Record.open(home.record_root).snapshot()
     payments, newsletter = snap.pursuit("Payments CI flakes"), snap.pursuit("Agent-tooling newsletter")
     ended = payments.past_steps[-1].ended if payments.past_steps else None
@@ -496,8 +504,8 @@ def _plain_words(home: AtlasHome) -> None:
 
 def _skip_by_word(home: AtlasHome) -> None:
     (_, said), (_, answer) = tutorial.exchange("skip 2, not today")
-    expect_all_lines(answer, _reply_once(home, said, seeds.FRIDAY_BRIEF_ID))
-    knee = Record.open(home.record_root).snapshot().pursuit(seeds.KNEE)
+    expect_all_lines(answer, _reply_once(home, said, brief_id(home, world.FRIDAY_BRIEF_AT.date())))
+    knee = Record.open(home.record_root).snapshot().pursuit("Knee rehab plan")
     skipped = knee.past_steps[-1] if knee.past_steps else None
     ended = skipped.ended if skipped else None
     if not isinstance(ended, Skipped) or ended.how != "word":
@@ -513,9 +521,9 @@ def _skip_by_word(home: AtlasHome) -> None:
 
 def _hold_and_drop(home: AtlasHome) -> None:
     (_, hold), (_, answer), (_, evening), (_, done) = tutorial.exchange("3 remind me friday")
-    expect_all_lines(answer, _reply_once(home, hold, seeds.TUESDAY_BRIEF_ID))
+    expect_all_lines(answer, _reply_once(home, hold, brief_id(home, world.TUESDAY_BRIEF_AT.date())))
     snap = Record.open(home.record_root).snapshot()
-    billing, bike = snap.pursuit(seeds.BILLING), snap.pursuit(seeds.BIKE)
+    billing, bike = snap.pursuit("Billing export service"), snap.pursuit("Bike route planner")
     step = billing.next_step
     if step is None or step.ended is not None or step.held_until != date(2026, 11, 20):
         raise Failed(f"the billing Step is {step}, not open and held until Friday 20 November")
@@ -525,8 +533,8 @@ def _hold_and_drop(home: AtlasHome) -> None:
         raise Failed(f"Bike route planner is {bike.status.value}, not dropped")
 
     home.set_clock(world.TABLET_AT)
-    expect_all_lines(done, _reply_once(home, evening, seeds.TUESDAY_BRIEF_ID))
-    reading = Record.open(home.record_root).snapshot().pursuit(seeds.READING)
+    expect_all_lines(done, _reply_once(home, evening, brief_id(home, world.TUESDAY_BRIEF_AT.date())))
+    reading = Record.open(home.record_root).snapshot().pursuit("Reading tracker for the kids")
     ended = reading.past_steps[-1].ended if reading.past_steps else None
     if reading.next_step is not None or not isinstance(ended, Done) or ended.how != "word":
         raise Failed(f"the reading tracker Step is {reading.next_step or ended}, not done by your word")
@@ -571,7 +579,7 @@ def _two_steps(home: AtlasHome) -> None:
     kept = Record.open(home.record_root).snapshot().brief(home.now.date())
     if kept.follows_up != date(2026, 11, 17) or [f.state for f in kept.followups] != ["done_seen", "done_word", "held"]:
         raise Failed(f"the brief follows up {kept.follows_up} as {[f.state for f in kept.followups]}")
-    if kept.decision is None or (kept.decision.pursuit, kept.decision.ask) != (seeds.BACKUPS, 1):
+    if kept.decision is None or (kept.decision.pursuit, kept.decision.ask) != (_id(home, "Home server backups"), 1):
         raise Failed(f"the decision slot asks {kept.decision}, not the backups for the first time")
 
 
@@ -581,23 +589,26 @@ def _held_step_first(home: AtlasHome) -> None:
     kept = snap.brief(home.now.date())
     if [f.state for f in kept.followups] != ["not_visible_yet", "no_sign", "no_sign"]:
         raise Failed(f"Thursday's Steps are followed up as {[f.state for f in kept.followups]}")
-    billing = snap.pursuit(seeds.BILLING)
+    billing = snap.pursuit("Billing export service")
     if rules.offers(snap, billing.id, billing.next_step) != 1:
         raise Failed("the held Step's first offer after the hold is not its first")
-    for id in (seeds.READING, seeds.GREENHOUSE):
+    for id in ("Reading tracker for the kids", "Greenhouse logger"):
         p = snap.pursuit(id)
-        if p.next_step is None or p.next_step.ended is not None or rules.offers(snap, id, p.next_step) != 1:
+        if p.next_step is None or p.next_step.ended is not None or rules.offers(snap, p.id, p.next_step) != 1:
             raise Failed(f"{p.name}'s Step is not open with one offer, to be offered once more")
+
+
 # ------------------------------------------------------------------ scenes 32, 33, 34: the Pause
 
-def _no_cron(home: AtlasHome) -> None:
-    calls = [c for c in home.hermes_calls() if c[:1] == ["cron"]]
+def _no_cron(home: AtlasHome, since: int) -> None:
+    calls = [c for c in home.hermes_calls()[since:] if c[:1] == ["cron"]]
     if calls:
         raise Failed(f"Atlas called hermes {' '.join(calls[0])}: a Pause never touches the Hermes cron job")
 
 
 def _pause(home: AtlasHome) -> None:
     (_, said), (_, answer) = tutorial.exchange(seeds.PAUSE_SAID)
+    calls = len(home.hermes_calls())
     reply = home.telegram(said)
     if reply is None or " ".join(reply.split()) != " ".join(answer.split()):
         raise Failed(f"Atlas answered {reply!r}, not the tutorial's {answer!r}")
@@ -610,7 +621,7 @@ def _pause(home: AtlasHome) -> None:
     kept = [(p.start, p.end, p.said) for p in snap.pauses()]
     if kept != [(world.PAUSE_AT, datetime(2026, 11, 22, 7, 0, tzinfo=world.TZ), seeds.PAUSE_SAID.removeprefix("pause "))]:
         raise Failed(f"pauses.md holds {kept}, not Friday 16:40 to Sunday 07:00 in your words")
-    _no_cron(home)
+    _no_cron(home, calls)
 
 
 SATURDAY_TICKS = (time(7, 30), time(12, 0), time(18, 0), time(23, 50))
@@ -627,6 +638,7 @@ def _filed_then_paused(home: AtlasHome) -> None:
 
 
 def _paused_saturday(home: AtlasHome) -> None:
+    calls = len(home.hermes_calls())
     friday = Record.open(home.record_root).snapshot()
     for at in SATURDAY_TICKS:
         home.set_clock(datetime.combine(world.SATURDAY_AT.date(), at, world.TZ))
@@ -636,7 +648,7 @@ def _paused_saturday(home: AtlasHome) -> None:
     if snap.brief(world.SATURDAY_AT.date()) is not None:
         raise Failed("Saturday has a brief file")
     evening = seeds.evidence_id(world.by_title("greenhouse evening check"))
-    greenhouse = snap.pursuit(seeds.GREENHOUSE)
+    greenhouse = snap.pursuit("Greenhouse logger")
     done = greenhouse.past_steps[-1].ended if greenhouse.past_steps else None
     if evening not in {m.evidence for m in greenhouse.sessions} or not isinstance(done, Done) or (
             done.basis.source.evidence != evening):
@@ -650,7 +662,7 @@ def _paused_saturday(home: AtlasHome) -> None:
     for p in snap.pursuits():
         if p.next_step is not None and rules.offers(snap, p.id, p.next_step) != rules.offers(friday, p.id, p.next_step):
             raise Failed(f"{p.name}'s Step was offered while Atlas was paused")
-    _no_cron(home)
+    _no_cron(home, calls)
 
 
 def expect_sunday(text: str) -> None:
@@ -676,6 +688,7 @@ def expect_sunday(text: str) -> None:
 
 
 def _sunday_follow_up(home: AtlasHome) -> None:
+    calls = len(home.hermes_calls())
     ran = home.cli("atlas", "tick", "--quiet")
     if ran.code != 0 or ran.out:
         raise Failed(f"hermes atlas tick --quiet exited {ran.code} and printed {ran.out!r}: {ran.err.strip()}")
@@ -686,7 +699,7 @@ def _sunday_follow_up(home: AtlasHome) -> None:
     kept = Record.open(home.record_root).snapshot().brief(home.now.date())
     if kept.follows_up != world.PAUSE_AT.date() or [f.state for f in kept.followups] != ["done_seen", "skipped_word"]:
         raise Failed(f"the brief follows up {kept.follows_up} as {[f.state for f in kept.followups]}")
-    _no_cron(home)
+    _no_cron(home, calls)
 
 
 # ------------------------------------------------------------------ scenes 9b, 10, 14, 15, 39: filing on the tick
@@ -709,15 +722,16 @@ def _changed_on_board(home: AtlasHome, name: str) -> dict:
 
 def _seen_done(home: AtlasHome) -> None:
     snap = _tick_files(home)
-    billing = snap.pursuit(seeds.BILLING)
+    billing = snap.pursuit("Billing export service")
     session = seeds.evidence_id(world.by_title("per-invoice vat rounding"))
     via = [s for s in snap.sessions() if s.interface == "T3 Code" and s.started.date() == home.now.date()]
     if [(s.id, s.harness) for s in via] != [(session, HarnessId.CLAUDE_CODE)]:
         raise Failed("the T3 Code Session is not held once, under Claude Code")
     done = billing.past_steps[-1] if billing.past_steps else None
     ended = done.ended if done else None
-    if not isinstance(ended, Done) or ended.how != "seen" or done.text.text != seeds.AFTER_SCENE_6[1].step:
-        raise Failed(f"Monday's billing Step is {done}, not done as seen in your Session")
+    offered = next((b.step for b in snap.brief(seeds.MONDAY).steps if b.pursuit == billing.id), None)
+    if not isinstance(ended, Done) or ended.how != "seen" or done.id != offered:
+        raise Failed(f"Monday's billing Step is {done}, not the Step Monday's brief offered, done as seen in your Session")
     cite = ended.basis.source
     if (cite.evidence, cite.label, cite.at, ended.basis.text) != (
             session, "Claude Code via T3 Code", seeds.SEEN_BILLING, "per-invoice rounding matches the ledger"):
@@ -738,7 +752,7 @@ def _tuesday_follow_up(home: AtlasHome) -> None:
     kept = Record.open(home.record_root).snapshot().brief(home.now.date())
     if [f.state for f in kept.followups] != ["done_word", "done_seen", "no_sign"]:
         raise Failed(f"Monday's Steps are followed up as {[f.state for f in kept.followups]}")
-    if kept.decision is None or (kept.decision.pursuit, kept.decision.ask) != (seeds.BIKE, 1):
+    if kept.decision is None or (kept.decision.pursuit, kept.decision.ask) != (_id(home, "Bike route planner"), 1):
         raise Failed(f"the decision slot asks {kept.decision}, not the bike route planner for the first time")
 
 
@@ -773,7 +787,7 @@ def _idea_becomes_project(home: AtlasHome) -> None:
 def _split_by_itself(home: AtlasHome) -> None:
     snap = _tick_files(home)
     _no_proposals(home)
-    staging, billing = snap.pursuit(seeds.STAGING), snap.pursuit(seeds.BILLING)
+    staging, billing = snap.pursuit("Billing export: staging deploy"), snap.pursuit("Billing export service")
     rotations = {seeds.evidence_id(s) for s in world.SESSIONS if s.title.startswith("rotate staging db password")}
     if len(rotations) != 2 or not rotations <= {m.evidence for m in staging.sessions}:
         raise Failed("the password-rotation Sessions are not filed under Billing export: staging deploy")
@@ -786,7 +800,8 @@ def _split_by_itself(home: AtlasHome) -> None:
 
 def _reactivated(home: AtlasHome) -> None:
     snap = _tick_files(home, ticks=2)
-    _no_proposals(home, {"Payments CI flakes": [ENDING_MARK]})
+    closed = snap.pursuit("Payments CI flakes").status is Status.DONE
+    _no_proposals(home, {} if closed else {"Payments CI flakes": [ENDING_MARK]})
     keyboard = snap.pursuit("Keyboard firmware")
     session = seeds.evidence_id(world.by_title("keyboard debounce 10 ms"))
     if keyboard.status is not Status.ACTIVE or keyboard.focus:
@@ -848,8 +863,16 @@ def _thursday_brief(home: AtlasHome) -> str:
 
 
 def _ending_proposed(home: AtlasHome) -> None:
+    _ending_seen(home)
+    home.set_clock(world.THURSDAY_BRIEF_AT)
+    _thursday_brief(home)
+    _ending_raised(home)
+
+
+def _ending_seen(home: AtlasHome) -> None:
+    """Wednesday's tick sees the CI flakes Step done and proposes the ending on the card."""
     snap = _tick_files(home, ticks=2)
-    payments = snap.pursuit(seeds.PAYMENTS)
+    payments = snap.pursuit("Payments CI flakes")
     ended = payments.past_steps[-1].ended if payments.past_steps else None
     if not isinstance(ended, Done) or ended.how != "seen" or ended.basis.source.label != "Codex":
         raise Failed(f"the CI flakes Step is {payments.next_step or ended}, not seen done in Codex")
@@ -858,23 +881,29 @@ def _ending_proposed(home: AtlasHome) -> None:
         raise Failed(f"the CI flakes proposals are {payments.proposals}, not one ending not yet raised")
     if _proposals(home, payments.name) != [ENDING_MARK]:
         raise Failed(f"the CI flakes card shows {_proposals(home, payments.name)}, not the ending proposal")
-    home.set_clock(world.THURSDAY_BRIEF_AT)
-    _thursday_brief(home)
+
+
+def _ending_raised(home: AtlasHome) -> None:
+    """Thursday's brief raises the ending in its follow-up, once."""
     snap = Record.open(home.record_root).snapshot()
     kept = snap.brief(home.now.date())
-    if [f.pursuit for f in kept.followups if f.ending_proposed] != [seeds.PAYMENTS]:
+    if [f.pursuit for f in kept.followups if f.ending_proposed] != [_id(home, "Payments CI flakes")]:
         raise Failed("the brief file does not record that it proposed the CI flakes' ending")
-    if not all(p.in_followup for p in snap.pursuit(seeds.PAYMENTS).proposals):
+    if not all(p.in_followup for p in snap.pursuit("Payments CI flakes").proposals):
         raise Failed("the ending proposal is not marked as raised, so a later brief could raise it again")
-    if _proposals(home, payments.name) != [ENDING_MARK]:
+    if _proposals(home, "Payments CI flakes") != [ENDING_MARK]:
         raise Failed("the card lost its ending mark before you answered")
 
 
 def _second_ask(home: AtlasHome) -> None:
     _thursday_brief(home)
+    _asked_again(home)
+
+
+def _asked_again(home: AtlasHome) -> None:
     kept = Record.open(home.record_root).snapshot().brief(home.now.date())
     if kept.decision is None or (kept.decision.pursuit, kept.decision.ask, kept.decision.quiet_days) != (
-            seeds.BACKUPS, 2, 21):
+            _id(home, "Home server backups"), 2, 21):
         raise Failed(f"the decision slot asks {kept.decision}, not the backups a second time, 21 days quiet")
 
 
@@ -882,9 +911,9 @@ def _close_and_continue(home: AtlasHome) -> None:
     (_, said), (_, answer) = tutorial.exchange("close it. continue the backups")
     if _proposals(home, "Payments CI flakes") != [ENDING_MARK]:
         raise Failed("the CI flakes card does not show the ending proposal before you answer")
-    expect_all_lines(answer, _reply_once(home, said, seeds.THURSDAY_BRIEF_ID))
+    expect_all_lines(answer, _reply_once(home, said, brief_id(home, world.THURSDAY_BRIEF_AT.date())))
     snap = Record.open(home.record_root).snapshot()
-    payments, backups = snap.pursuit(seeds.PAYMENTS), snap.pursuit(seeds.BACKUPS)
+    payments, backups = snap.pursuit("Payments CI flakes"), snap.pursuit("Home server backups")
     if payments.status is not Status.DONE or payments.focus or payments.proposals:
         raise Failed(f"Payments CI flakes is {payments.status.value}, focus {payments.focus}, "
                      f"proposals {payments.proposals}")
@@ -930,7 +959,8 @@ def _profile_correction(home: AtlasHome) -> None:
     if reply is None:
         raise Failed(f"Atlas did not claim {said!r}")
     expect_all_lines(answer, reply)
-    [note] = [n for n in Record.open(home.record_root).snapshot().notes() if n.via == "telegram" and n.id != seeds.SPLIT_SAID.id]
+    note = [n for n in Record.open(home.record_root).snapshot().notes()
+            if n.via == "telegram" and n.id != seeds.SPLIT_SAID.id][-1]
     _corrected(home, note.id, home.now)
     before = home.files()
     if home.telegram(said, message_id=home.last_message_id) != reply or home.files() != before:
@@ -961,7 +991,7 @@ def _hand_edit(home: AtlasHome) -> None:
 
     home.set_clock(world.SKIP_AT)
     (_, said), (_, answer) = tutorial.exchange("skip 2, not today")
-    expect_all_lines(f"{answer}\n{_offer()}", home.telegram(said, reply_to=seeds.FRIDAY_BRIEF_ID))
+    expect_all_lines(f"{answer}\n{_offer()}", home.telegram(said, reply_to=brief_id(home, world.FRIDAY_BRIEF_AT.date())))
 
     home.set_clock(world.SKIP_AT + timedelta(minutes=1))
     (_, words), (_, changed) = tutorial.exchange("atlas, profile:")
@@ -1012,16 +1042,18 @@ def _forget(home: AtlasHome) -> None:
         data = path.read_bytes()
         if any(words.encode() in data for words in (forgotten, world.PASTED_PASSWORD, world.PLANTED)):
             raise Failed(f"{path.relative_to(root)} still holds the forgotten Session")
-    staging, payments = after.pursuit(seeds.STAGING), after.pursuit("p-2x7b")
+    staging, payments = after.pursuit("Billing export: staging deploy"), after.pursuit("Payments CI flakes")
     if staging.resume.left_off or [m.evidence for m in staging.sessions] != [m.evidence for m in before.pursuit(
-            seeds.STAGING).sessions if m.evidence != forgotten] or staging.next_step != before.pursuit(
-            seeds.STAGING).next_step:
+            "Billing export: staging deploy").sessions if m.evidence != forgotten] or staging.next_step != before.pursuit(
+            "Billing export: staging deploy").next_step:
         raise Failed("Billing export: staging deploy kept the forgotten Fact or lost something else")
-    if payments != before.pursuit("p-2x7b"):
+    if payments != before.pursuit("Payments CI flakes"):
         raise Failed("Forget changed Payments CI flakes")
     day = after.journal(seeds.THURSDAY)
     flake = seeds.evidence_id(world.by_title("flake fix merged"))
-    if [s.text for s in day.lines] != ["Merged the retry flake fix."] or day.evidence != (flake,):
+    kept = [s.text for s in before.journal(seeds.THURSDAY).lines
+            if forgotten not in (s.basis if isinstance(s, Inference) else (s.source.evidence,))]
+    if [s.text for s in day.lines] != kept or len(kept) != 1 or day.evidence != (flake,):
         raise Failed(f"Thursday's Journal is {day}, not its one other line counted from its other Session")
     if day.time.total >= before.journal(seeds.THURSDAY).time.total:
         raise Failed("Thursday's Active Time still counts the forgotten Session")
@@ -1035,8 +1067,9 @@ def _forget(home: AtlasHome) -> None:
         raise Failed("a redelivered \"forget\" got another reply or changed the record")
     home.set_clock(world.FORGET_AT + timedelta(minutes=10))
     ran = home.cli("atlas", "tick", "--quiet")
-    if ran.code != 0 or folder.exists() or len(home.sent()) != 1:
-        raise Failed(f"the next tick exited {ran.code}, collected the Session again or sent no Daily Brief")
+    brief = Record.open(root).snapshot().brief(home.now.date())
+    if ran.code != 0 or folder.exists() or brief is None or brief.status is not SendStatus.SENT:
+        raise Failed(f"the next tick exited {ran.code}, collected the Session again or left the day with no Daily Brief")
 
 
 # ------------------------------------------------------------------ scene 2: the Settings tab
@@ -1242,6 +1275,12 @@ def _monday_corrected(home: AtlasHome) -> None:
         raise Failed("Monday's Journal day is not written from the store Sessions before the exports")
     _imported(home, _drop_exports(home), world.EXPORTED)
     _tick_files(home)
+    _monday_reads_corrected(home)
+
+
+def _monday_reads_corrected(home: AtlasHome) -> None:
+    """Monday's Journal day as the exports' import left it. In the chained week, scene 16's
+    import is the one that corrects it."""
     snap = Record.open(home.record_root).snapshot()
     if any(n.origin.value == "hand_edit" for n in snap.notes()):
         raise Failed("the sweep took the corrected Journal day for a hand edit")
@@ -1322,10 +1361,12 @@ def _gpx_answer(call: dict) -> dict:
             .removesuffix(" [F]"), "quote": said.split(": ", 1)[1].rstrip(".")}
 
 
-def _find(home: AtlasHome) -> None:
+def _find(home: AtlasHome, asked: bool = True) -> None:
+    """In the chained week scene 21 has asked the same question a moment before, so the model's
+    answer comes from Atlas's cache (`asked` False)."""
     (_, said), (_, answer) = tutorial.exchange("find the conversation where I got the GPX")
     expect_all_lines(answer, _ask(home, _addressed(said)))
-    if [c["task"] for c in home.ctx.fake_llm.calls] != ["atlas_answer"]:
+    if [c["task"] for c in home.ctx.fake_llm.calls] != ["atlas_answer"] * asked:
         raise Failed("the answer did not come from one atlas_answer call")
     index = home.record_root / ".atlas" / "index.sqlite"
     index.unlink()
@@ -1335,8 +1376,9 @@ def _find(home: AtlasHome) -> None:
 
 def _outside(home: AtlasHome) -> None:
     (_, said), (_, answer) = tutorial.exchange("send Dana the billing export status")
+    calls = len(home.hermes_calls())
     expect_all_lines(answer, _ask(home, said))
-    if any(call[:1] == ["send"] for call in home.hermes_calls()):
+    if any(call[:1] == ["send"] for call in home.hermes_calls()[calls:]):
         raise Failed("Atlas called hermes send")
 
 
@@ -1399,7 +1441,7 @@ SCENES: dict[str, Scene] = {
     "39": Scene(world.REACTIVATED_AT, seed=lambda home: seeds.collecting(seeds.after_scene_6)(home.record_root), step=_reactivated,
                 llm=filing_model),
     "19": Scene(world.ENDING_TICK_AT, seed=lambda home: seeds.collecting(seeds.wednesday_afternoon)(home.record_root),
-                step=_ending_proposed, llm=filing_model),
+                step=_ending_proposed, llm=filing_model, week=_ending_seen, later=("20", _ending_raised)),
     "20": Scene(world.THURSDAY_BRIEF_AT, seed=lambda home: seeds.wednesday_evening(home.record_root), step=_second_ask),
     "20b": Scene(world.CLOSE_AT, seed=lambda home: seeds.after_scene_20(home.record_root), step=_close_and_continue),
     "21": Scene(world.NEGLECTED_AT, seed=lambda home: seeds.after_scene_20b(home.record_root), step=_what_neglected,
@@ -1411,7 +1453,8 @@ SCENES: dict[str, Scene] = {
                 step=_knee_proposal),
     "16": Scene(world.EXPORTS_AT, seed=lambda home: seeds.web_chats_added(seeds.after_scene_6)(home.record_root),
                 step=_web_chats_imported, llm=filing_model),
-    "18": Scene(world.EXPORTS_AT, seed=_monday_before_exports, step=_monday_corrected, llm=filing_model),
+    "18": Scene(world.EXPORTS_AT, seed=_monday_before_exports, step=_monday_corrected, llm=filing_model,
+                week=_monday_reads_corrected),
     "35": Scene(world.SUNDAY_PROMPT_AT, seed=lambda home: seeds.web_chats_added(seeds.sunday_knee_offered)(
         home.record_root), step=_knee_said_done, llm=filing_model),
     "26": Scene(world.SKIP_AT, seed=lambda home: seeds.after_scene_25(home.record_root), step=_skip_by_word),
@@ -1421,10 +1464,10 @@ SCENES: dict[str, Scene] = {
     "29": Scene(world.HAND_EDIT_AT, seed=lambda home: seeds.scene_29(home.record_root), step=_hand_edit,
                 llm=profile_model),
     "30": Scene(world.FORGET_AT, seed=_forgettable, step=_forget),
-    "31": Scene(world.SKIP_AT + timedelta(hours=8), seed=lambda home: seeds.after_scene_6(home.record_root),
+    "31": Scene(world.PAUSE_AT - timedelta(minutes=5), seed=lambda home: seeds.after_scene_6(home.record_root),
                 step=_drag_to_parked),
     "22": Scene(world.FIND_AT, seed=lambda home: seeds.thursday(home.record_root), step=_find,
-                llm=lambda: FakeLlm({"atlas_answer": _gpx_answer})),
+                llm=lambda: FakeLlm({"atlas_answer": _gpx_answer}), week=lambda home: _find(home, asked=False)),
     "24": Scene(world.OUTSIDE_AT, seed=lambda home: seeds.thursday(home.record_root), step=_outside),
     "32": Scene(world.PAUSE_AT, seed=lambda home: seeds.after_scene_26(home.record_root), step=_pause),
     "33": Scene(world.SATURDAY_AT, seed=_filed_then_paused, step=_paused_saturday, llm=filing_model),
@@ -1459,19 +1502,48 @@ def run_scenes(claims: frozenset[str]) -> dict[str, Result]:
     return {i: run_scene(i) if i in claims else Result("not claimed") for i in SCENE_IDS}
 
 
-def run_week() -> Result:
-    """Sunday to Sunday in one chain from an empty home, with no seeds."""
+WEEK: tuple[str, ...] = ("1", "2", "3a", "3b", "3c", "4", "5", "6", "7", "8", "9", "9b", "10", "11", "12", "13", "14",
+                         "15", "16", "18", "19", "17", "20", "20b", "21", "22", "23", "24", "25", "29", "26", "27", "28",
+                         "30", "31", "32", "33", "34", "35", "36", "37", "38", "39")
+"""The scenes in the order the tutorial's week lives them. Scene 19's step runs in the week as its
+Wednesday tick, before the knee's star of scene 17 that evening; its Thursday checks run once scene 20
+has sent Thursday's brief, and are reported under scene 19."""
+IF_ONLY = frozenset({"29"})
+"""Scenes the tutorial tells as what would happen ("If you edited the file, Atlas would put it
+back"): the week runs each on a copy and goes on from the state before it."""
+
+
+def run_week() -> dict[str, Result]:
+    """Sunday to Sunday in one chain from an empty home, with no seeds: each scene's step, in
+    the tutorial's order, at its own time, on what the scenes before it left. A scene that fails
+    is reported and the chain goes on from whatever it left."""
+    results: dict[str, Result] = {}
     with tempfile.TemporaryDirectory(prefix="atlas-week-") as base, AtlasHome(Path(base)) as home:
-        for n, scene_id in enumerate(SCENE_IDS):
+        for scene_id in WEEK:
             scene = SCENES.get(scene_id)
             if scene is None:
-                return Result("fail", f"stopped at scene {scene_id}, which has no step yet; {n} of {len(SCENE_IDS)} ran")
-            home.set_clock(scene.at)
-            home.ctx.fake_llm = scene.llm() if scene.llm else FakeLlm()
-            result = _attempt(lambda: scene.step(home))
-            if result.status == "fail":
-                return Result("fail", f"scene {scene_id}: {result.reason}")
-    return Result("pass")
+                results[scene_id] = Result("fail", "the harness has no step for it yet")
+                continue
+            if home.now is not None and scene.at < home.now and scene_id not in IF_ONLY:
+                results[scene_id] = Result("fail", f"its clock {scene.at:%a %H:%M} is before the week's {home.now:%a %H:%M}")
+                continue
+            results[scene_id] = _chained(home, scene, scene_id in IF_ONLY)
+            for earlier, check in ((i, s.later[1]) for i, s in SCENES.items() if s.later and s.later[0] == scene_id):
+                if results.get(earlier, Result("fail")).status == "pass":
+                    results[earlier] = _attempt(lambda: check(home))
+    return results
+
+
+def _chained(home: AtlasHome, scene: Scene, if_only: bool) -> Result:
+    def run() -> None:
+        home.next_scene()
+        home.set_clock(scene.at)
+        home.ctx.fake_llm = week_model(atlas_answer=_gpx_answer)
+        (scene.week or scene.step)(home)
+    if not if_only:
+        return _attempt(run)
+    with home.fork():
+        return _attempt(run)
 
 
 def _attempt(run: Callable[[], object]) -> Result:
@@ -1484,14 +1556,18 @@ def _attempt(run: Callable[[], object]) -> Result:
     return Result("pass")
 
 
-def report(results: dict[str, Result], week: Result) -> str:
+def report(results: dict[str, Result], week: dict[str, Result]) -> str:
     passed = sum(r.status == "pass" for r in results.values())
     failed = sum(r.status == "fail" for r in results.values())
     claims = sum(r.status != "not claimed" for r in results.values())
+    chained = sum(r.status == "pass" for r in week.values())
     return "\n".join([
         "Atlas proof harness, scene mode",
         *(f"  {scene_id:<4} {result}" for scene_id, result in results.items()),
         "",
-        f"Week mode (reported, not gating): {week}",
+        "Week mode (reported, not gating), Sunday to Sunday in one chain",
+        *(f"  {scene_id:<4} {result}" for scene_id, result in week.items()),
+        "",
         f"Claimed {claims} of {len(results)} scenes: {passed} passed, {failed} failed.",
+        f"Week mode chained {chained} of {len(week)} scenes.",
     ])

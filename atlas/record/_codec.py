@@ -40,7 +40,7 @@ from ..model import (COMMANDS, ONE_OFF, Actor, Area, BriefStep, ChannelSetting, 
                      Pause,
                      Profile, ProfileEntry, Proposal, Pursuit, PursuitId, RawPart, ReopenProposal, ResumeNote,
                      SendAttempt, SendStatus, SentBrief, SessionCard, SessionEvidence, Settings, Skipped, Statement,
-                     Status, Step, StepId, Turn, Who, sent_sha256)
+                     Status, Step, StepId, Turn, Who, cites, sent_sha256)
 from ._layout import FileKind
 
 
@@ -85,8 +85,22 @@ def render(kind: FileKind, value: object, tz: tzinfo | None) -> bytes:
     """`tz` is settings.timezone. Only settings.md and README.md render without it. Every text
     in `value` is masked first, so no codec writes a detected secret (D Q4). A surrogate pair is
     written as the character it stands for, and a lone surrogate, which UTF-8 cannot hold, as
-    U+FFFD."""
-    return render_bare(kind, _scrubbed(value, type(value)), tz)
+    U+FFFD. Bytes Atlas could not read again, or a Profile whose entries would read back as
+    others, raise Unrepresentable, so no write leaves a file that stalls whatever reads it."""
+    masked = _scrubbed(value, type(value))
+    data = render_bare(kind, masked, tz)
+    try:
+        again = parse(kind, data, tz)
+        same = kind != "profile" or _entries(again) == _entries(masked)
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise Unrepresentable(f"a {kind} file that does not read back ({type(error).__name__})") from error
+    if not same:
+        raise Unrepresentable(f"a {kind} file that reads back as something else")
+    return data
+
+
+def _entries(p: Profile) -> list[tuple]:
+    return [(type(e.statement), e.statement.text, cites(e.statement), e.added, e.by) for e in p.entries]
 
 
 def render_bare(kind: FileKind, value: object, tz: tzinfo | None) -> bytes:

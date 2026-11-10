@@ -8,8 +8,10 @@ import inspect
 import io
 import json
 import os
+import shutil
+import socket
 import sys
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -77,6 +79,7 @@ class FakePluginContext:
         return None
 
 
+MACHINE = "ubuntu-pc"        # the tutorial's machine, which the throwaway home is named as
 OWNER = "5550001"            # the owner's Telegram user id, and so their direct chat with the bot
 
 
@@ -182,6 +185,8 @@ class AtlasHome:
         self._bot_said: dict[tuple[str, str | None, str], str] = {}
         self.hook_failures: list[Exception] = []
         self.now: datetime | None = None
+        self.kept: dict[str, object] = {}       # week mode: what one scene leaves for a later one to check
+        self._sent_from = 0
         self._saved: dict[str, str] | None = None
         self._dashboard = None
 
@@ -191,11 +196,14 @@ class AtlasHome:
             os.environ.pop(name, None)
         os.environ.update(HOME=str(self.home), TZ="Europe/Berlin", FAKE_HERMES_DIR=str(self.fake_hermes),
                           PATH=f"{self.bin}{os.pathsep}{self._saved.get('PATH', '')}")
+        self._hostname = socket.gethostname
+        socket.gethostname = lambda: MACHINE
         import atlas
         atlas.register(self.ctx)
         return self
 
     def __exit__(self, *exc) -> None:
+        socket.gethostname = self._hostname
         os.environ.clear()
         os.environ.update(self._saved)
 
@@ -306,10 +314,37 @@ class AtlasHome:
         log = self.fake_hermes / "calls.jsonl"
         return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
+    def next_scene(self) -> None:
+        """Week mode: from here on, `sent` shows only what the next scene sends."""
+        self._sent_from += len(self.sent())
+
+    @contextmanager
+    def fork(self):
+        """Week mode: what runs inside changes nothing the chain goes on with. The tutorial's "if
+        you edited the file, Atlas would..." happens on a copy of HOME and of the fake Hermes."""
+        saved = self.base / "fork"
+        shutil.rmtree(saved, ignore_errors=True)
+        for folder in (self.home, self.fake_hermes):
+            shutil.copytree(folder, saved / folder.name, symlinks=True)
+        state = (self.ctx, self.chat[:], self.now, self.kept.copy(), self._sent_from, self._bot_said.copy())
+        try:
+            self.restart_gateway()
+            yield self
+        finally:
+            for folder in (self.home, self.fake_hermes):
+                shutil.rmtree(folder)
+                shutil.copytree(saved / folder.name, folder, symlinks=True)
+            shutil.rmtree(saved)
+            self.ctx, self.chat, now, self.kept, self._sent_from, self._bot_said = state
+            if now is not None:
+                self.set_clock(now)
+
     def sent(self) -> list[dict]:
-        """Each message the fake `hermes send` delivered: its target, text and message id."""
+        """Each message the fake `hermes send` delivered, since the scene began in week mode: its
+        target, text and message id."""
         log = self.fake_hermes / "sent.jsonl"
         rows = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        rows = rows[self._sent_from:]
         return [{"to": r["argv"][r["argv"].index("--to") + 1], "text": r["argv"][-1], "message_id": r["message_id"]}
                 for r in rows]
 

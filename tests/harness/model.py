@@ -12,18 +12,25 @@ import re
 from datetime import datetime
 
 from . import seeds, tutorial, world
-from .fake_llm import FakeLlm
+from .fake_llm import FakeLlm, Respond
 
 _SESSION = re.compile(r"^Session (\S+) · ", re.M)
 
 
 def world_model() -> FakeLlm:
-    return FakeLlm({"atlas_backfill": _respond, "atlas_journal": _journal})
+    return FakeLlm({"atlas_backfill": _respond, "atlas_journal": _respond})
 
 
 def filing_model() -> FakeLlm:
     """The world model, which also files each Session the tick reads as world.TICK_FILINGS says."""
-    return FakeLlm({"atlas_backfill": _respond, "atlas_journal": _journal, "atlas_file": _file})
+    return FakeLlm({"atlas_backfill": _respond, "atlas_journal": _respond, "atlas_file": _file})
+
+
+def week_model(**more: Respond) -> FakeLlm:
+    """Every scripted answer at once, for the week replayed in one chain: backfill, filing, the
+    Journal and the owner's words."""
+    return FakeLlm({task: _respond for task in ("atlas_backfill", "atlas_journal", "atlas_file", "atlas_converse")}
+                   | more)
 
 
 def profile_model() -> FakeLlm:
@@ -33,7 +40,7 @@ def profile_model() -> FakeLlm:
 def _respond(call: dict) -> dict:
     return {"card": _card, "group": _group, "reconcile": _reconcile, "journal": _journal, "converse": _converse,
             "partition": _partition, "filing": _file, "profile_correction": _correction,
-            "profile_edit": _edit}[call["schema"]["title"]](call)
+            "profile_edit": _edit, "profile": _profile}[call["schema"]["title"]](call)
 
 
 def _sessions(call: dict) -> dict[str, world.WorldSession]:
@@ -61,10 +68,17 @@ def _group(call: dict) -> dict:
         pursuits.append({
             "name": name, "kind": card.kind, "area": area, "sessions": [ids[t] for t in mine],
             "left_off": [{"text": card.left_off, "quote": f"Done for now: {mine[-1]}.", "sessions": [last]}],
-            "decided": [], "open_questions": [], "reopen": [last],
+            **_resume(name, ids, last, f"Done for now: {mine[-1]}."),
             "next_step": {"text": card.next, "quote": None, "sessions": [last]}})
     one_offs = [{"session": ids[t], "area": area} for t, area in world.BACKFILL_ONE_OFFS.items() if t in ids]
     return {"pursuits": pursuits, "one_offs": one_offs}
+
+
+def _resume(name: str, ids: dict[str, str], last: str, quote: str) -> dict:
+    decided, question, reopen = world.BACKFILL_RESUME.get(name, (None, None, ()))
+    return {"decided": [{"text": decided, "quote": quote, "sessions": [last]}] if decided else [],
+            "open_questions": [{"text": question, "quote": None, "sessions": [last]}] if question else [],
+            "reopen": [ids[t] for t in reopen if t in ids] or [last]}
 
 
 def _reconcile(call: dict) -> dict:
@@ -96,7 +110,7 @@ def _file(call: dict) -> dict:
     out["pursuit"] = listed[name]
     rule = next((n for n, text in _RULE.findall(call["input"])
                  if "belong here" in text and _owner(call["input"], n) == listed[name]), None)
-    out["rule"] = int(rule) if rule else None
+    out["rule"] = int(rule) if rule and (filed is None or filed.by_rule) else None
     if filed and filed.left_off:
         quote = turns[filed.left_at] if filed.left_at else f"Done for now: {s.title}."
         out["left_off"] = [{"text": filed.left_off, "quote": quote, "sessions": [id]}]
@@ -141,6 +155,27 @@ def _journal(call: dict) -> dict:
         first = min((t for t in s.turns() if t.at.date() == day), key=lambda t: t.at)
         out["worked_on"].append({"pursuit": pursuits[0], "text": f"worked on {s.title}.", "quote": first.text})
     return out
+
+
+_SHOWN = re.compile(r"Session (\S+) · \S+.*? · (\d{4}-\d{2}-\d{2}) ")
+
+
+def _profile(call: dict) -> dict:
+    """The Profile the tutorial's `cat ~/atlas/profile.md` shows: its first and third entries
+    from the whole history at backfill, its second from Monday, when the greenhouse Step went
+    undone, placed after the first."""
+    blocks, hardware, parks = (re.sub(r" \[I from .*\]$", "", line[2:]) for line in
+                               tutorial.fenced_block("# Profile").splitlines() if line.startswith("- "))
+    shown = dict(_SHOWN.findall(call["input"]))
+    titles = {seeds.evidence_id(s): s.title for s in world.SESSIONS}
+    on = lambda *wanted: [id for id in shown if titles.get(id) in wanted]
+    if not (day := _DAY.search(call["input"])):
+        return {"entries": [
+            {"text": blocks, "sessions": [], "pattern": f"{len(set(shown.values()))} days of Sessions", "after": None},
+            {"text": parks, "sessions": on("right half drops", "pi-hole dns loop"), "pattern": None, "after": None}]}
+    if datetime.strptime(day[1], "%d %B %Y").date() == world.FIRST_BRIEF_AT.date() and on("logger sd card swap"):
+        return {"entries": [{"text": hardware, "sessions": on("logger sd card swap"), "pattern": None, "after": 1}]}
+    return {"entries": []}
 
 
 WRONG = "You skip Steps that need hardware."

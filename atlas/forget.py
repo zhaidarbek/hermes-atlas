@@ -225,8 +225,8 @@ def _s(n: int) -> str:
 
 def execute(snap: Snapshot, evidence: Sequence[EvidenceId], now: datetime) -> ChangeSet:
     """One ChangeSet: the evidence removed, every file that cites it rewritten without it, the
-    Journal's Active Time counted again, forgotten.md told, its filing back-off dropped, and the plan
-    cleared."""
+    Journal's Active Time counted again, forgotten.md told, its filing back-off and the Profile texts
+    corrected away that rested on it dropped, and the plan cleared."""
     held = {h.id: h for h in snap.held().sessions()}
     ids = frozenset(evidence)
     keys = set()
@@ -252,6 +252,9 @@ def execute(snap: Snapshot, evidence: Sequence[EvidenceId], now: datetime) -> Ch
         f = snap.forgotten()
         at = now.replace(second=0, microsecond=0)
         cs.put_forgotten(Forgotten((*f.entries, *((at, "a Session") for _ in ids & held.keys())), f.skip_keys | keys))
+    corrected = snap.profile_corrections()
+    if any(rests_on & ids for rests_on in corrected.values()):
+        cs.set_profile_corrections({text: on for text, on in corrected.items() if not on & ids})
     retries = snap.filing_retries()
     if ids & retries.keys():
         cs.set_filing_retries({id: r for id, r in retries.items() if id not in ids})

@@ -176,8 +176,8 @@ def test_a_session_forgotten_while_the_pursuits_are_planned_leaves_nothing_read_
     atlas(home).backfill(NOW)
     payments = snap(home).pursuit("Payments CI flakes")
     assert [m.evidence for m in payments.sessions] == kept
-    assert (payments.kind.value, payments.resume.decided, payments.history[0].statement.text) == (
-        "problem", (), "Created from 3 Sessions")
+    assert (payments.kind.value, [d.text for d in payments.resume.decided], payments.history[0].statement.text) == (
+        "problem", [world.BACKFILL_RESUME["Payments CI flakes"][0]], "Created from 3 Sessions")
     assert not [path for path, (data, _) in home.files().items() if REMOVED_WORDS.encode() in data]
 
 
@@ -202,7 +202,8 @@ def test_removing_a_session_drops_the_model_outputs_read_from_it(home):
     gone = seeds.evidence_id(world.by_title("retry flake"))
     cache = home.record_root / ".atlas" / "cache"
     tagged = [p for p in cache.glob("*.json") if gone in p.read_text()]
-    assert len(tagged) == 4                  # its card, its folder's group, the reconciliation, its Journal lines
+    assert len(tagged) == 5                  # its card, its folder's group, the reconciliation, its Journal lines,
+                                             # the first Profile
     record = Record.open(home.record_root)
     record.commit(record.snapshot().changes().remove_evidence(gone))
     assert not any(gone in p.read_text() for p in cache.glob("*.json"))

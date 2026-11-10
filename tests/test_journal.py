@@ -212,8 +212,10 @@ def test_a_day_under_half_a_minute_is_not_written_and_never_stops_the_other_days
     asked about it, and the tick and backfill still write Monday."""
     s = sunday_session(home, timedelta(seconds=20))
     home.ctx.fake_llm = FakeLlm({
-        "atlas_backfill": lambda call: {"intent": "Check the knee plan.", "outcome": "Answered.", "unfinished": None},
-        "atlas_journal": lambda call: {"worked_on": [], "decided": [], "finished": []},
+        "atlas_backfill": lambda call: {"entries": []} if call["schema"]["title"] == "profile" else {
+            "intent": "Check the knee plan.", "outcome": "Answered.", "unfinished": None},
+        "atlas_journal": lambda call: {"entries": []} if call["schema"]["title"] == "profile" else {
+            "worked_on": [], "decided": [], "finished": []},
         "atlas_file": READ_ONLY})
     with caplog.at_level(logging.WARNING, logger="atlas"):
         tick(home)

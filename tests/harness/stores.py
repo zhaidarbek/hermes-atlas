@@ -6,6 +6,7 @@ and their turns so far.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -26,9 +27,16 @@ DEFAULT_ROOTS = {CC: ".claude", CX: ".codex", DV: ".local/share/devin/cli", HM: 
 
 
 def materialise(home: Path, now: datetime) -> None:
-    """Rewrite every store at its default root under `home` as of `now`."""
+    """Rewrite every store at its default root under `home` as of `now`. A file whose bytes are
+    the same keeps its modification time, as a store a Harness has not written to does."""
     for store in DEFAULT_ROOTS:
-        write_store(store, home / DEFAULT_ROOTS[store], home, now)
+        root = home / DEFAULT_ROOTS[store]
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.rglob("*") if p.is_file()} \
+            if root.exists() else {}
+        write_store(store, root, home, now)
+        for path, (data, mtime) in before.items():
+            if path.is_file() and path.read_bytes() == data:
+                os.utime(path, ns=(mtime, mtime))
 
 
 def write_store(store: HarnessId | str, root: Path, home: Path, now: datetime) -> None:

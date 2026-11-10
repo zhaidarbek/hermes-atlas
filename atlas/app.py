@@ -20,8 +20,8 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo, available_timezones
 
-from . import (__version__, activetime, agents, ask, channel, converse, corrections, filing, forget, neglect, rules, schedule,
-               settings_rules, sources)
+from . import (__version__, activetime, agents, ask, channel, converse, corrections, filing, forget, neglect, profiling,
+               rules, schedule, settings_rules, sources)
 from .librarian import JournalLines, Librarian, Llm, ModelError, Unusable
 from .model import (Agent, Answer, ApplyNote, Authority, BoardQ, ChangeSettings, ChannelSetting, Command, ConfirmForget,
                     Coverage, DayTime, EvidenceId, FindQ, HarnessId, HarnessSetting, InterfaceSetting, NeglectedQ, NoteOrigin,
@@ -215,9 +215,9 @@ class Atlas:
         Session that has none, then, while the record holds no Pursuit, builds the Pursuits
         from every Session (librarian.group_backfill, rules.start_state) in one commit. A re-run
         finds it all done and changes nothing. With no model, or when a model call fails, it
-        logs and leaves the rest to the next backfill. Still to come: journal for every day ->
-        librarian.profile_pass over the whole history, the first Profile (G3).
-        Then it writes the Journal for every day with Active Time up to today."""
+        logs and leaves the rest to the next backfill. Then it writes the Journal for every day
+        with Active Time up to today and, while the Profile has no entry, the first Profile from
+        the whole history (G3)."""
         with schedule.TickLease(self._record.root, wait=True):
             report = self._collect(every=True)
             if self._llm is None:
@@ -228,6 +228,8 @@ class Atlas:
                 if carded := self._write_cards(librarian):
                     self._build(librarian, now)
                     self._journal(librarian, None, self._today(now))
+                    if not self._record.snapshot().profile().entries:
+                        self._profile(librarian, None, now)
             snap = self._record.snapshot()
             unanswered = not carded and not any(_readable_card(snap, h.id) for h in snap.held().sessions())
             return replace(report, filed=_filed(snap, now), journal=_journaled(snap), unanswered=unanswered)
@@ -237,7 +239,8 @@ class Atlas:
         is held; a store or Session it cannot read, or a Session the model gives no filing for, is
         logged and skipped, and the next tick tries again. It files at most filing.BUDGET Sessions,
         each with its own commit. It writes each Journal day closed since the newest day the
-        Journal has, that day included, or since backfill built the Pursuits. The send phase runs
+        Journal has, that day included, or since backfill built the Pursuits, and once for each
+        day it writes first, adds what the Profile pass finds in it (G3). The send phase runs
         after the lease is released, so another process's long collect never holds back the brief
         and a slow send never makes another tick skip collecting.
         Web-chat exports in the inbox are imported after collecting, IMPORT_BUDGET Sessions a tick
@@ -245,7 +248,6 @@ class Atlas:
         Journal has already written that a Session filed this tick worked on is written again with
         a "Corrected" line.
         # TODO pseudocode for what is still to come:
-        #   if lease.held: for each day closed: librarian.profile_pass(snap, day)       # daily (G3)
         #     weekly: librarian.regroup
         """
         hand_edits = len(self._record.reconcile())
@@ -715,6 +717,8 @@ class Atlas:
             late = corrections.late_days(snap, filed, set(days), since)
             if late:
                 self._journal(librarian, min(late), until, only=late, now=now)
+            for day in sorted(set(self._record.snapshot().journal_days()) - set(days)):
+                self._profile(librarian, day, now)
         except Exception as error:
             log.warning("Atlas skipped the Journal this tick (%s)", type(error).__name__)
 
@@ -780,6 +784,18 @@ class Atlas:
         except Exception as error:
             log.warning("Atlas left the Journal of %s to the next run (%s)", day.isoformat(), type(error).__name__)
         return True
+
+    def _profile(self, librarian: Librarian, day: date | None, now: datetime) -> None:
+        """Adds what the Profile pass for `day` (the whole history when None) finds, once (G3). A
+        model that gives nothing usable leaves the Profile as it is, logged."""
+        try:
+            new = librarian.profile_pass(self._record.snapshot(), day)
+            if new:
+                today = self._today(now)
+                self._decide(lambda s: Decision(s.changes().put_profile(profiling.added(s.profile(), new, today)),
+                                                Outcome(True, ())))
+        except Exception as error:
+            log.warning("Atlas left the Profile as it is (%s)", _why(error))
 
     def _today(self, now: datetime) -> date:
         return now.astimezone(ZoneInfo(self._record.snapshot().settings().timezone)).date()
