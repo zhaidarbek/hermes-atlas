@@ -14,7 +14,7 @@ from typing import Sequence
 from zoneinfo import ZoneInfo
 
 from . import forget, rules
-from .librarian import Filing
+from .librarian import ALSO, DECISIONS, Filing
 from .model import (Actor, Cite, Done, EndingProposal, EvidenceId, Fact, FocusProposal, HistoryId, HistoryLine,
                     Inference, Membership, Outcome, Pursuit, ReopenProposal, SessionEvidence, Statement, Status, Step,
                     StepId)
@@ -66,8 +66,9 @@ def apply(snap: Snapshot, f: Filing, now: datetime) -> Decision:
     """The Filing on this Snapshot, under the librarian's authority: the card, the membership, and
     for a Session that advanced its Pursuit the Left off, the open Step seen done, the next Step, a
     Kind change, an ending proposal for an active Pursuit, a parked Pursuit active again (a done or
-    dropped one gets a reopen proposal), each change Atlas makes with a History line. A Session that
-    changed since the model read it is left to the next tick. A change of membership cancels a Forget that waits for "forget"."""
+    dropped one gets a reopen proposal), each change Atlas makes with a History line. A Session first
+    filed into one Pursuit is also listed by the first ALSO other Pursuits it worked on that are
+    active, so its Active Time is split between them; one that is not active is left as it is. A Session that changed since the model read it is left to the next tick. A change of membership cancels a Forget that waits for "forget"."""
     cs = snap.changes()
     s = snap.session(f.evidence)
     if _instant(s.last_at) != _instant(f.last_at):
@@ -83,6 +84,8 @@ def apply(snap: Snapshot, f: Filing, now: datetime) -> Decision:
             cs.put_pursuit(_offered(_filed(p, f, s, now, today), now, today) if p.id == f.pursuit else _grown(p, s))
     elif f.pursuit is not None:
         cs.put_pursuit(_offered(_filed(snap.pursuit(f.pursuit), f, s, now, today), now, today))
+        for other in [o for o in map(snap.pursuit, f.also) if o.status is Status.ACTIVE][:ALSO]:
+            cs.put_pursuit(_grown(other, s, f.advances))
     elif f.new_pursuit is not None:
         cs.put_pursuit(_offered(_created(snap, f, now, today), now, today))
     else:
@@ -123,6 +126,10 @@ def _filed(p: Pursuit, f: Filing, s: SessionEvidence, now: datetime, today) -> P
         resume = q.resume
         if f.left_off:
             resume = replace(resume, left_off=f.left_off)
+        decided = {d.text: d for d in resume.decided}
+        for d in f.decided[:DECISIONS]:
+            decided.setdefault(d.text, d)
+        resume = replace(resume, decided=tuple(decided.values()))
         q = replace(q, resume=replace(resume, reopen=(s.id, *(r for r in resume.reopen if r != s.id))[:3]))
     seen = f.step_outcome
     if seen is not None and q.next_step is not None and q.next_step.id == seen.step and q.next_step.ended is None:

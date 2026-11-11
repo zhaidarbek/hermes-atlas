@@ -16,7 +16,7 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from . import privacy, rules, told, untrusted
+from . import messages, privacy, rules, told, untrusted
 from .librarian import FIELD_MAX, TEXT_MAX
 from .messages import Style, statement
 from .model import (Actor, AddNote, Agent, Cite, EditResumeNote, EvidenceId, Fact, HarnessId, HistoryLine,
@@ -167,12 +167,12 @@ def resume(snap: Snapshot, p: Pursuit, now: datetime) -> tuple[str, list[dict]]:
     """The Resume Note as scene 12 shows it to an agent: marks bare, their sources in the citations."""
     r = p.resume
     parts: list[tuple[str, Statement]] = [("Left off: ", s) for s in r.left_off]
-    parts += [("Decided: ", s) for s in r.decided] + [("Open question: ", s) for s in r.open_questions]
+    parts += [("Decided: ", s) for s in messages.recent_decided(r)] + [("Open question: ", s) for s in r.open_questions]
     if p.next_step is not None:
         step = p.next_step.text.text
         parts.append(("Next Step: ", replace(p.next_step.text, text=step[:1].lower() + step[1:]
                                              if step[1:2].islower() else step)))
-    lines = [f'Resume Note for "{p.name}":', *(f"Where: {s.text}" for s in r.where),
+    lines = [f'Resume Note for "{p.name}":', *(f"Where: {s.text}" for s in messages.places(r.where)),
              *(label + statement(s, Style.TELEGRAM) for label, s in parts)]
     reopen = [_reopened(snap, id, now) for id in r.reopen]
     if any(reopen):

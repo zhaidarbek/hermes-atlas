@@ -1250,7 +1250,7 @@ def _render_journal(jf: JournalFile, tz: tzinfo | None) -> str:
              f'active_time: {{total: {_q(_clock_duration(t.total))}, by_area: {{{by_area}}},',
              f"{_FRONT_INDENT}by_pursuit: {{{by_pursuit}}}}}",
              f"evidence: {_flow(list(j.evidence), tz)}"]
-    marks = _Marks(tz)
+    marks = _Marks(tz, counted=[])
     body = [f"# {_long_day(j.day)}", "", f"Active time {_duration(t.total)} [F counted · active_time · {n} Sessions]",
             *_area_lines(t, jf.names)]
     for title, attr in _JOURNAL_SECTIONS:
@@ -1261,6 +1261,8 @@ def _render_journal(jf: JournalFile, tz: tzinfo | None) -> str:
                  f"[F counted · sessions · {n} Sessions]",
              *(f"Corrected {_line(c)}" for c in j.corrections),
              f"Covers AI Sessions on {_line(jf.machine)} only."]
+    if marks.counted:
+        front += ["counted:", *(f"  - {_flow({'rule': c.rule, 'basis': c.basis}, tz)}" for c in marks.counted)]
     return _document(front, "\n".join(body) + "\n")
 
 
@@ -1316,7 +1318,8 @@ def _parse_journal(text: str, tz: tzinfo | None) -> JournalFile:
     active_time = DayTime(_read_clock_duration(f["active_time"]["total"]), areas, evidence)
     if m["span"] != _duration(active_time.total):
         raise ValueError(f"the Active time line shows another total: {active!r}")
-    marks, sections = _Marks(tz), {}
+    marks = _Marks(tz, counted=[Count(c["rule"], tuple(c["basis"])) for c in f.get("counted") or ()])
+    sections = {}
     titles = dict(_JOURNAL_SECTIONS)
     for block in blocks[1:-1]:
         title, *items = block.split("\n")
@@ -1330,6 +1333,7 @@ def _parse_journal(text: str, tz: tzinfo | None) -> JournalFile:
             or not all(line.startswith("Corrected ") for line in rest[:-1])):
         raise ValueError(f"unreadable Evidence lines: {blocks[-1]!r}")
     corrections = tuple(line.removeprefix("Corrected ") for line in rest[:-1])
+    marks.finish()
     day = JournalDay(_as_date(f["day"]), active_time, sections.get("worked_on", ()), sections.get("decided", ()),
                      sections.get("finished", ()), corrections)
     return JournalFile(day, names, e["shared"].removeprefix(" "), covers["machine"])

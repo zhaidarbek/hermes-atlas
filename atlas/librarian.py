@@ -24,8 +24,8 @@ from zoneinfo import ZoneInfo
 
 from . import privacy, profiling
 from .model import (Answer, Area, Cite, Command, CorrectProfile, Coverage, EvidenceId, Fact, Inference,
-                    Kind, Membership, Note, ProfileEntry, Pursuit, PursuitId, ResumeNote, SessionCard, SessionEvidence,
-                    Statement, Status, StepId, Turn, harness_of)
+                    HarnessId, Kind, Membership, Note, NoteOrigin, ProfileEntry, Pursuit, PursuitId, ResumeNote,
+                    SessionCard, SessionEvidence, Statement, Status, StepId, Turn, harness_of)
 from .record import Hit, Snapshot
 
 PROMPT_VERSION = 1
@@ -35,6 +35,8 @@ ANSWER = "atlas_answer"
 READ_HITS = 3                                # transcripts the model reads for a FindQ
 FILE_TASK = "atlas_file"
 MIN_QUOTE = 15                               # characters, as the prototype's validator required
+ALSO = 2                                     # other Pursuits one Session may also be listed under
+DECISIONS = 2                                # Decided lines one filing may add
 OWNER_CAP, AGENT_CAP = 1700, 1800            # one turn, as in the prototype; the last turn is never cut further
 SESSION_BUDGET = 11_000                      # characters of one Session's transcript in a card call
 GROUP_BUDGET = 60_000                        # characters of Session summaries in one group call
@@ -107,6 +109,8 @@ class Filing:
     kind_change: tuple[Kind, Inference] | None
     rule: Fact | None                        # the owner's Filing rule the model filed it by
     ending: tuple[Status, Inference] | None = None   # the ending the Session shows, with its reason
+    also: tuple[PursuitId, ...] = ()         # other Pursuits the Session worked on, besides `pursuit`
+    decided: tuple[Fact, ...] = ()           # what the Session, or an agent's Note written in it, decided
 
 
 @dataclass(frozen=True)
@@ -194,12 +198,15 @@ session. Never copy a secret; "[secret: ...]" marks one that was masked."""
 FILE = """You read one Session the owner had with an AI tool, and the owner's Pursuits. Say where the
 Session belongs: in one Pursuit (give its id), in a new Pursuit (name, kind and Area) when it starts
 work the owner might return to, or as a one-off with its Area when it is a single question with no
-unfinished intent. Follow the owner's Filing rules: when one decides where the Session goes, give its
-number. Say whether the Session advanced the work (false when it only read or asked about it). For a
+unfinished intent. When the Session in one Pursuit also worked on other Pursuits, give their ids in
+also. Follow the owner's Filing rules: when one decides where the Session goes, give its number. Say
+whether the Session advanced the work (false when it only read or asked about it). For a
 Pursuit, give its new left_off when the Session moved it on, step_done when the Session shows the
 Pursuit's open Step done, next_step (the smallest unblocked action, or null when none is known), and
-kind when the Session shows the Pursuit is now another kind, with the reason, and ending when the
-Session shows the Pursuit's purpose is met (done) or given up (dropped), with the reason. Also give the
+kind when the Session shows the Pursuit is now another kind, with the reason, ending when the
+Session shows the Pursuit's purpose is met (done) or given up (dropped), with the reason, and decided:
+what the owner decided in the Session, or in a Note an agent wrote in it, each in a few words. Also
+give the
 Session's intent and outcome in short plain sentences. When a statement is read straight from the
 Session, give its quote: 15 to 200 characters copied exactly from the Session's text; otherwise give
 a null quote. Never copy a secret; "[secret: ...]" marks one that was masked."""
@@ -249,7 +256,7 @@ def file_schema(pursuits: Sequence[str], areas: Sequence[str]) -> dict:
     statement = {"anyOf": [{"type": "null"}, _STATEMENT]}
     return {"title": "filing", "type": "object", "required": [
         "intent", "outcome", "pursuit", "new_pursuit", "one_off_area", "rule", "advances", "left_off", "step_done",
-        "next_step", "kind", "ending"], "properties": {
+        "next_step", "kind", "ending", "also", "decided"], "properties": {
         "intent": {"type": "string"}, "outcome": {"type": "string"},
         "pursuit": {"anyOf": [{"type": "null"}, {"enum": list(pursuits)}]},
         "new_pursuit": {"anyOf": [{"type": "null"}, {"type": "object", "required": ["name", "kind", "area"],
@@ -261,7 +268,8 @@ def file_schema(pursuits: Sequence[str], areas: Sequence[str]) -> dict:
         "kind": {"anyOf": [{"type": "null"}, {"type": "object", "required": ["to", "reason"], "properties": {
             "to": {"enum": kinds}, "reason": {"type": "string"}}}]},
         "ending": {"anyOf": [{"type": "null"}, {"type": "object", "required": ["to", "reason"], "properties": {
-            "to": {"enum": [Status.DONE.value, Status.DROPPED.value]}, "reason": {"type": "string"}}}]}}}
+            "to": {"enum": [Status.DONE.value, Status.DROPPED.value]}, "reason": {"type": "string"}}}]},
+        "also": {"type": "array", "items": {"enum": list(pursuits)}}, "decided": _STATEMENTS}}
 
 
 def group_schema(areas: Sequence[str]) -> dict:
@@ -420,6 +428,7 @@ class Librarian:
         areas = {_safe(a): Area(a) for a in snap.profile().areas}
         rules = [(p.id, r) for p in pursuits for r in p.filing_rules]
         own = {s.id: s}
+        notes = [n for n in snap.notes() if n.origin is NoteOrigin.AGENT and s.id in n.derived_from]
 
         def read(out: dict) -> Filing:
             intent, outcome = _text(out["intent"]), _text(out["outcome"])
@@ -442,8 +451,7 @@ class Librarian:
                     raise ValueError("a new Pursuit with the name of one there is")
             elif p is None:
                 area = _area(out["one_off_area"], areas)
-            advances = bool(out["advances"]) and any(t.role == "owner" and t.own and not t.atlas_tool_turn
-                                                     for t in s.turns)
+            advances = bool(out["advances"]) and any(_owner_turn(t) for t in s.turns)
             seen = None
             if advances and p is not None and out["step_done"] and p.next_step is not None and p.next_step.ended is None:
                 row = out["step_done"]
@@ -461,11 +469,20 @@ class Librarian:
                 ending = (Status(said["to"]), Inference(_text(said["reason"]), (s.id,)))
             rule = out["rule"]
             cited = rules[rule - 1] if isinstance(rule, int) and 1 <= rule <= len(rules) else None
+            also = tuple(dict.fromkeys(q.id for k in out.get("also") or ()
+                                       if p is not None and (q := by_key.get(k)) is not None and q.id != p.id
+                                       and q.status is Status.ACTIVE))[:ALSO]
+            decided: dict[str, Fact] = {}
+            for row in out.get("decided") or () if p is not None and advances else ():
+                if (d := _decided(row, s, notes)) is not None:
+                    decided.setdefault(d.text, d)
             return Filing(s.id, s.last_at, card, p.id if p else None, draft, area, advances, left_off,
                           nxt if isinstance(nxt, Inference) else None, seen, kind,
-                          cited[1] if cited and p is not None and cited[0] == p.id else None, ending)
+                          cited[1] if cited and p is not None and cited[0] == p.id else None, ending, also,
+                          tuple(decided.values())[:DECISIONS])
         listing = "\n\n".join(_listed(p, rules) for p in pursuits) or "(none)"
-        input = f"Areas: {', '.join(areas)}\n\nPursuits:\n{listing}\n\n{_transcript(s)}"
+        noted = "".join(f"\n\nNote from {_via(n)} · {n.at:%Y-%m-%d %H:%M}\n{_cap(n.text, AGENT_CAP)}" for n in notes)
+        input = f"Areas: {', '.join(areas)}\n\nPursuits:\n{listing}\n\n{_transcript(s)}{noted}"
         return self._ask(FILE_TASK, FILE, input, file_schema(list(by_key), list(areas)), (s.id,), read)
 
     def regroup(self, snap: Snapshot) -> list[Command]:
@@ -616,6 +633,56 @@ def _head(s: SessionEvidence) -> str:
 
 def _cap(text: str, n: int) -> str:
     return text if len(text) <= n else text[:n] + " [...]"
+
+
+def _via(n: Note) -> str:
+    return HarnessId(n.via).label
+
+
+_WORD = re.compile(r"[^\W_]+")
+FILLER = frozenset({"a", "an", "the", "to", "of", "and", "or", "for", "in", "on", "at", "by", "with", "from", "it",
+                    "its", "is", "be", "we", "i", "will", "that", "this", "now"})
+"""The words a decision may hold that its quote does not (supported)."""
+
+
+def words(text: str) -> list[str]:
+    """A text's words as an agent's change is checked against the owner's: casefolded runs of
+    letters and digits, so "5-minute" is "5" and "minute"."""
+    return _WORD.findall(text.casefold())
+
+
+def stem(word: str) -> str:
+    for ending in ("ing", "ed", "s"):
+        if word.endswith(ending) and len(word) - len(ending) >= 3:
+            return word[:-len(ending)]
+    return word
+
+
+def supported(text: str, quote: str) -> bool:
+    """Every word of `text` but FILLER is a word of `quote`, each taken without an ending "ing",
+    "ed" or "s", and there is such a word: a decision may shorten the owner's words but never add
+    to them."""
+    said = {stem(w) for w in words(quote)}
+    held = {stem(w) for w in words(text) if w not in FILLER}
+    return bool(held) and held <= said
+
+
+def _owner_turn(t: Turn) -> bool:
+    return t.role == "owner" and t.own and not t.atlas_tool_turn
+
+
+def _decided(row: Mapping, s: SessionEvidence, notes: Sequence[Note]) -> Fact | None:
+    """A decision a filing answer read, as a Fact: its quote found in a turn the owner typed in
+    the Session, or else in a Note an agent wrote in it, and its text supported by the quote.
+    None otherwise."""
+    text, quote = _text(row["text"]), row.get("quote")
+    if not text or not isinstance(quote, str) or not supported(text, quote):
+        return None
+    turn = _found(quote, [t for t in s.turns if _owner_turn(t)])
+    if turn is not None:
+        return Fact(text, Cite(s.id, _label(s), turn.at))
+    note = next((n for n in notes if _found(quote, [Turn("agent", n.at, n.text, "main")])), None)
+    return Fact(text, Cite(note.id, f"Note from {_via(note)}", note.at)) if note else None
 
 
 def _turn(s: SessionEvidence, t: Turn) -> str:

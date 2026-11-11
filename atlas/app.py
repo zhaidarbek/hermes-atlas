@@ -21,7 +21,7 @@ from typing import Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo, available_timezones
 
 from . import (__version__, activetime, agents, ask, channel, converse, corrections, filing, forget, neglect, profiling,
-               review, rules, schedule, settings_rules, sources)
+               review, rules, schedule, settings_rules, sources, telegram)
 from .librarian import JournalLines, Librarian, Llm, ModelError, Unusable
 from .model import (Agent, Answer, ApplyNote, Authority, BoardQ, ChangeSettings, ChannelSetting, Command, ConfirmForget,
                     Coverage, DayTime, EvidenceId, FindQ, HarnessId, HarnessSetting, InterfaceSetting, NeglectedQ, NoteOrigin,
@@ -765,7 +765,7 @@ class Atlas:
             log.warning("Atlas left the Journal day %s as it is: it could not read it (%s)", day.isoformat(),
                         type(error).__name__)
             return True
-        if not rules.journal_due(current, active, held):
+        if not rules.journal_due(current, active, held, rules.finished_steps(snap, day)):
             return True
         new = rules.uncited(snap, current, active)
         try:
@@ -900,7 +900,7 @@ class Atlas:
             return None
         attempt = replace(message.attempts[-1], text_sha256=sent_sha256(text))
         try:
-            sent = channel.Telegram(snap.settings()).send(text)
+            sent = channel.Telegram(snap.settings()).send(text, telegram.Kind.BRIEF if what == "brief" else telegram.Kind.REVIEW)
             outcome = replace(attempt, status=SendStatus.SENT, message_ids=sent.message_ids, chat=sent.chat)
         except channel.SendRefused as refused:
             log.warning("Atlas could not send the %s (%s); the next tick tries once more", what,

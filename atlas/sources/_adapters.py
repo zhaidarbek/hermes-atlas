@@ -77,7 +77,7 @@ from zoneinfo import ZoneInfo
 
 import zstandard
 
-from .. import privacy
+from .. import privacy, telegram
 from ..model import (LOCAL, HarnessId, RawPart, Sent, SessionEvidence, Settings, Turn, evidence_id, part_file,
                      part_origin)
 from . import MAIN, Fetched, Found, Head, Key, Lineage, NativeSession, Unit, _excluded
@@ -730,6 +730,12 @@ def _mirrored(m: dict, sent: Sent) -> bool:
     if m.get("role") != "assistant" or not isinstance(text, str):
         return False
     merged = bool(_json_list(m.get("absorbed_message_uids")))
+    return any(_sent_as(shown, sent, merged) for shown in dict.fromkeys((text, telegram.plain(text))))
+
+
+def _sent_as(text: str, sent: Sent, merged: bool) -> bool:
+    """`text` is a sent text, as it reads or with its secrets masked. Atlas sends Telegram a text
+    styled, and the row holds it so."""
     if _mirrors(text, sent.texts, merged):
         return True
     masked, heads = _masked(sent.maybe_bare)

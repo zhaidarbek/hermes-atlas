@@ -1,7 +1,8 @@
 """Channels: where Atlas talks to the owner. v1 ships Telegram through Hermes; the Channel
 protocol is the seam for others (Slack/Discord via the same `hermes send` targets).
 
-Outbound: `hermes send --to <target> --json "<text>"` as a subprocess. It works from the cron
+Outbound: `hermes send --to <target> --json "<text>"` as a subprocess, the text styled for Telegram
+(atlas.telegram), as is each answer a hook returns. It works from the cron
 tick and any CLI process, needs no gateway for bot-token platforms, and returns the chat and
 message_id, both recorded on the send attempt: a Telegram message id is unique only within its
 chat. It cannot attach buttons. Hermes mirrors the text into the owner's chat session in state.db
@@ -72,7 +73,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable, Protocol
 
-from . import _hermes, messages
+from . import _hermes, messages, telegram
 from .model import ChannelSetting, OwnerMessage, SentRef, Settings
 
 if TYPE_CHECKING:
@@ -102,7 +103,7 @@ class Delivered:
 
 
 class Channel(Protocol):
-    def send(self, text: str) -> Delivered: ...
+    def send(self, text: str, kind: telegram.Kind) -> Delivered: ...
     def check(self) -> str | None: ...       # None ok, else what setup should tell the owner
 
 
@@ -110,11 +111,11 @@ class Channel(Protocol):
 class Telegram:
     settings: Settings
 
-    def send(self, text: str) -> Delivered:
-        """subprocess: hermes send --to <settings.channel.target> --json <text>.
+    def send(self, text: str, kind: telegram.Kind) -> Delivered:
+        """subprocess: hermes send --to <settings.channel.target> --json <text, styled for its kind>.
         exit 0 -> the chat and message ids (SENT); exit 1 after the platform may have accepted it, or
         a timeout -> ArrivalUnknown (retried once the same day, D Q13); exit 2 (usage) -> SendRefused."""
-        return send(self.settings.channel, text)
+        return send(self.settings.channel, text, kind)
 
     def check(self) -> str | None:
         """`hermes send -l` lists the home channel for the platform; otherwise tell the owner to /sethome."""
@@ -128,10 +129,10 @@ class Telegram:
         return None
 
 
-def send(setting: ChannelSetting, text: str) -> Delivered:
+def send(setting: ChannelSetting, text: str, kind: telegram.Kind) -> Delivered:
     """Telegram.send for a Channel setting alone, as the gateway sends a late answer (D Q8)."""
     try:
-        done = _hermes.run("send", "--to", setting.target, "--json", text)
+        done = _hermes.run("send", "--to", setting.target, "--json", shown(setting.platform, text, kind))
     except subprocess.TimeoutExpired as late:
         raise ArrivalUnknown("hermes send timed out") from late
     except OSError as refused:
@@ -145,6 +146,11 @@ def send(setting: ChannelSetting, text: str) -> Delivered:
     thread = rest.split(":")[1] if rest.count(":") else None
     chat = chat_key(platform, result["chat_id"], thread) if result.get("chat_id") else None
     return Delivered(chat, (str(result["message_id"]),) if result.get("message_id") is not None else ())
+
+
+def shown(platform: str, text: str, kind: telegram.Kind) -> str:
+    """The text as it leaves for `platform`: with Telegram's markup there, as it is elsewhere."""
+    return telegram.styled(text, kind) if platform == "telegram" else text
 
 
 def _result(stdout: str) -> dict:
@@ -279,7 +285,7 @@ class Listener:
         ref = f"{chat}:{message_id}"
         earlier = await asyncio.to_thread(atlas.answered, ref)
         if earlier is not None:
-            return {"action": "handled", "reply": earlier}
+            return {"action": "handled", "reply": shown(setting.platform, earlier, telegram.Kind.ANSWER)}
         reply_to = heard.reply_to
         if reply_to is None and heard.reply_id:
             reply_to = await self._once_sent(atlas, chat, heard.reply_id)
@@ -292,7 +298,7 @@ class Listener:
         if reply is None:
             return None
         self._mark_claimed(chat, message_id, now)
-        return {"action": "handled", "reply": reply}
+        return {"action": "handled", "reply": shown(setting.platform, reply, telegram.Kind.ANSWER)}
 
     async def _within_budget(self, atlas: "Atlas", msg: OwnerMessage) -> str | None:
         """Atlas's reply, or HOLDING once the budget is spent (D Q8). The handling thread then
@@ -323,17 +329,17 @@ class Listener:
         owned = self._owned(str(source.user_id), chat)
         if owned is None:
             return None
-        atlas = owned[0]
+        atlas, setting = owned[0], owned[1]
         message = str(source.message_id) if source.message_id else None
         ref = f"{chat}:{message}" if message else None
         earlier = atlas.answered(ref) if ref else None
         if earlier is not None:
-            return earlier
+            return shown(setting.platform, earlier, telegram.Kind.ANSWER)
         heard = self._heard.get((chat, message), Heard(None, None))
         reply = _handle(atlas, OwnerMessage(raw_args, now, "slash", chat, heard.reply_to, ref, True))
         if reply is not None and message:
             self._mark_claimed(chat, message, now)
-        return reply
+        return shown(setting.platform, reply, telegram.Kind.ANSWER) if reply is not None else None
 
     def _owned(self, sender: str, chat: str) -> tuple["Atlas", ChannelSetting, Home] | None:
         """Atlas, its Channel setting and the home channel, when the owner wrote in the Channel's
@@ -378,7 +384,7 @@ def _handle(atlas: "Atlas", msg: OwnerMessage) -> str | None:
 
 def _send_late(atlas: "Atlas", reply: str | None) -> None:
     try:
-        send(atlas.channel(), messages.fit(reply or LATE_FAILURE))
+        send(atlas.channel(), messages.fit(reply or LATE_FAILURE), telegram.Kind.ANSWER)
     except Exception as failed:
         log.warning("Atlas could not send a late answer (%s)", type(failed).__name__)
 

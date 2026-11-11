@@ -15,6 +15,7 @@ import pytest
 import atlas.record as record_module
 from atlas.app import Atlas
 from atlas.channel import Delivered
+from atlas.telegram import styled
 from atlas.model import (Actor, Cite, Fact, HistoryLine, Inference, Kind, Membership, Note, NoteOrigin, Pause, Profile,
                          ProfileEntry, Pursuit, ResumeNote, SendAttempt, SendStatus, SessionCard, Status, Step, Who)
 from atlas.record import Record, _codec, _masking, _seal, _txn
@@ -254,9 +255,9 @@ def test_a_brief_sent_bare_and_masked_at_open_keeps_its_mirror_rows_out(tmp_path
     assert rec.snapshot().brief(NOW.date()).text == masked
     sent = []
 
-    def mirrored(channel, t):
+    def mirrored(channel, t, kind):
         sent.append(t)
-        run(db, MIRROR, t, T + 120)
+        run(db, MIRROR, styled(t, kind), T + 120)
         return Delivered("telegram:5550001", ("42",))
 
     monkeypatch.setattr(app.channel.Telegram, "send", mirrored)
@@ -643,7 +644,7 @@ def test_a_commit_that_fails_keeps_the_staged_copies_of_the_files_it_would_write
 def test_a_tick_sends_the_brief_while_staged_copies_cannot_be_deleted(tmp_path, throwaway_home, monkeypatch):
     root, rec, _ = a_fact_staged(tmp_path, throwaway_home, monkeypatch, brief_at=time(7, 30))
     (root / ".atlas/masking/state.tmp").write_bytes(b"invented state cut short")
-    monkeypatch.setattr(app.channel.Telegram, "send", lambda self, text: Delivered("telegram:5550001", ("41",)))
+    monkeypatch.setattr(app.channel.Telegram, "send", lambda self, text, kind: Delivered("telegram:5550001", ("41",)))
 
     (root / ".atlas/masking").chmod(0o500)
     try:
@@ -729,7 +730,7 @@ def test_a_link_where_a_session_folder_is_is_never_followed_and_the_pass_ends_on
     if dangling:
         away = away.rename(tmp_path / "gone")
     behind = stat(away)
-    monkeypatch.setattr(app.channel.Telegram, "send", lambda self, text: Delivered("telegram:5550001", ("41",)))
+    monkeypatch.setattr(app.channel.Telegram, "send", lambda self, text, kind: Delivered("telegram:5550001", ("41",)))
 
     with caplog.at_level(logging.WARNING, logger="atlas.record"):
         for _ in range(3):

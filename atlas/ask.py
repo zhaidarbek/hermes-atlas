@@ -63,8 +63,8 @@ def resume(snap: Snapshot, p: Pursuit, now: datetime) -> str:
     head = [p.name, p.kind.value, p.status.value]
     if p.last_worked is not None:
         head.append(f"last Session {_day(p.last_worked, now, weekday=True)}")
-    parts: list[tuple[str, Statement | Bare]] = [("Where: ", Bare(s)) for s in p.resume.where]
-    for label, part in (("Left off: ", p.resume.left_off), ("Decided: ", p.resume.decided),
+    parts: list[tuple[str, Statement | Bare]] = [("Where: ", Bare(s)) for s in messages.places(p.resume.where)]
+    for label, part in (("Left off: ", p.resume.left_off), ("Decided: ", messages.recent_decided(p.resume)),
                         ("Open question: ", p.resume.open_questions)):
         parts += [(label, s) for s in part]
     if p.next_step is not None:

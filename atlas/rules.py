@@ -20,10 +20,10 @@ from zoneinfo import ZoneInfo
 
 from . import activetime, ask, messages, neglect, pausing, review
 from .activetime import TimedSession, Work
-from .librarian import Grouping, JournalLines, PursuitDraft
+from .librarian import Grouping, JournalLines, PursuitDraft, stem, words
 from .model import (ONE_OFF, Actor, AddArea, Answer, AnswerProposal, ApplyNote, Area, Authority, BoardView, BriefStep,
-                    Card, ChangeSettings, Cite, Command, Continue, CorrectProfile, Coverage, DayTime, Done, EditResumeNote,
-                    EndingProposal, EndPause, EvidenceId, Fact, FocusProposal, Followup, HarnessId, HistoryId, HistoryLine,
+                    Card, ChangeSettings, Cite, Command, Continue, CorrectProfile, Count, Coverage, DayTime, Done,
+                    EditResumeNote, EndingProposal, EndPause, EvidenceId, Fact, FocusProposal, Followup, HarnessId, HistoryId, HistoryLine,
                     HoldDecision, HoldStep, Inference, JournalDay, Librarian, MarkSeen, MarkStep, Merge, Note,
                     NoteOrigin, OutsideAction, Outcome, Owner, OwnerMessage, Pause, PauseCmd, Profile, ProfileEntry,
                     Pursuit, PursuitId, Query, ReopenProposal, ResumePromptQ, ResumeQ, SendAttempt, SendStatus,
@@ -245,28 +245,12 @@ def _answer(p: Pursuit, cmd: AnswerProposal, said: Cite) -> tuple[Pursuit, str]:
 RESUME_EDITED = "Changed the Resume Note."
 QUESTION_CLOSED = 'Closed the open question "{}".'
 """The History line of an Open question an update removed: the Review's DECIDED reads it."""
-_WORD = re.compile(r"[^\W_]+")
-
-
-def words(text: str) -> list[str]:
-    """A text's words as an agent's change is checked against the owner's: casefolded runs of
-    letters and digits, so "5-minute" is "5" and "minute"."""
-    return _WORD.findall(text.casefold())
-
-
-def _stem(word: str) -> str:
-    for ending in ("ing", "ed", "s"):
-        if word.endswith(ending) and len(word) - len(ending) >= 3:
-            return word[:-len(ending)]
-    return word
-
-
 def named(text: str, lines: Sequence[Statement]) -> list[Statement]:
     """The lines `text` names: every word of it is a word of the line, each taken without an
     ending "ing", "ed" or "s", so "the card filling up" names "does the 32 GB card fill up before
     spring?"."""
-    said = {_stem(w) for w in words(text)}
-    return [s for s in lines if said and said <= {_stem(w) for w in words(s.text)}]
+    said = {stem(w) for w in words(text)}
+    return [s for s in lines if said and said <= {stem(w) for w in words(s.text)}]
 
 
 def edit_resume(p: Pursuit, cmd: EditResumeNote, said: Cite, actor: Actor = Actor.OWNER,
@@ -522,7 +506,8 @@ def _sessions(n: int) -> str:
 
 def _merge(desk: _Desk, cmd: Merge, said: Cite, _: object) -> str:
     """One Pursuit from two (W Q2): the Kind, Area, Resume Note and Next Step of the one worked on
-    last, every Session, both Histories, and the owner's reason as a Filing rule. The other's open
+    last, with the other's places and Sessions to reopen after its own, every Session, both
+    Histories, and the owner's reason as a Filing rule. The other's open
     Step ends as replaced, and a Step of its whose id the kept one uses takes the next free id.
     It is active and in Focus when either was."""
     keep, gone = sorted((desk.pursuit(cmd.a), desk.pursuit(cmd.b)),
@@ -542,8 +527,13 @@ def _merge(desk: _Desk, cmd: Merge, said: Cite, _: object) -> str:
     n = max((int(h.id.split("-")[1]) for h in keep.history), default=0)
     carried = tuple(replace(h, id=HistoryId(f"h-{n + i:04d}")) for i, h in enumerate(gone.history, 1))
     rule = f'Work filed as "{gone.name}" belongs here' + (f": {cmd.rule}." if cmd.rule else ".")
+    places: dict[str, Statement] = {}
+    for s in (*keep.resume.where, *gone.resume.where):
+        places.setdefault(s.text, s)
+    resume = replace(keep.resume, where=tuple(places.values()),
+                     reopen=tuple(dict.fromkeys((*keep.resume.reopen, *gone.resume.reopen)))[:3])
     merged = replace(
-        keep, name=cmd.into_name or keep.name, status=status,
+        keep, name=cmd.into_name or keep.name, status=status, resume=resume,
         focus=status is Status.ACTIVE and (keep.focus or gone.focus), created=min(keep.created, gone.created),
         continued=max((d for d in (keep.continued, gone.continued) if d), default=None),
         past_steps=keep.past_steps + tuple(carried_steps),
@@ -1058,18 +1048,47 @@ def uncited(snap: Snapshot, current: JournalDay | None, time: DayTime) -> list[E
     return sorted((id for id in time.basis if id not in cited), key=lambda id: place.get(id, len(shown)))
 
 
-def journal_due(current: JournalDay | None, time: DayTime, held: set[EvidenceId]) -> bool:
+def journal_due(current: JournalDay | None, time: DayTime, held: set[EvidenceId], steps: Fact | None = None) -> bool:
     """A day with at least a minute of Active Time is written when its file is missing, shows
-    another Active Time, or cites a Session the record no longer holds."""
+    another Active Time or another Finished line `steps` (finished_steps), or cites a Session the
+    record no longer holds."""
     if not time.total:
         return False
-    return current is None or current.time != time or not _still_held(current.lines, held)
+    return current is None or current.time != time or not _still_held(current.lines, held) \
+        or _counted_steps(current.finished) != ((steps,) if steps else ())
+
+
+def finished_steps(snap: Snapshot, day: date) -> Fact | None:
+    """The Journal's Finished line, counted from the record: the Pursuits whose Steps ended done
+    on `day`, in the order they ended, resting on what showed each Step done. A Step whose basis is
+    a Session the record no longer holds is left out."""
+    zone = ZoneInfo(snap.settings().timezone)
+    held = {h.id for h in snap.held().sessions()}
+    done = sorted(((s.ended, p.name) for p in snap.pursuits() for s in (*p.past_steps, p.next_step)
+                   if s is not None and isinstance(s.ended, Done) and s.ended.at.astimezone(zone).date() == day
+                   and _still_held((s.ended.basis,), held)),
+                  key=lambda d: d[0].at.astimezone(timezone.utc))
+    if not done:
+        return None
+    names = list(dict.fromkeys(name for _, name in done))
+    listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    basis = tuple(dict.fromkeys(id for ended, _ in done for id in sorted(cites(ended.basis))))
+    return Fact(f"Step{'s' if len(done) > 1 else ''} on {listed}.", Count("steps", basis))
+
+
+def _counted_steps(lines: Sequence[Statement]) -> tuple[Statement, ...]:
+    return tuple(s for s in lines if isinstance(s, Fact) and isinstance(s.source, Count) and s.source.rule == "steps")
+
+
+_STEPS_LINE = re.compile(r"Steps? on .+\.")
+"""A Finished line naming the Pursuits whose Steps ended done, as an older Atlas cited it."""
 
 
 def journal_day(snap: Snapshot, day: date, time: DayTime, lines: JournalLines, corrected: str | None = None
                 ) -> Decision:
-    """The day's file: its Active Time, the lines it had whose Sessions are all still held, then
-    `lines`, which the model drafted from the Sessions the file did not cite yet, and its
+    """The day's file: its Active Time, its Finished line counted from the record (finished_steps)
+    in place of any Steps line it had, the lines it had whose Sessions are all still held, then `lines`, which the model drafted from
+    the Sessions the file did not cite yet, and its
     corrections, `corrected` (corrections.line) added after them."""
     current = snap.journal(day)
     held = {h.id for h in snap.held().sessions()}
@@ -1077,7 +1096,9 @@ def journal_day(snap: Snapshot, day: date, time: DayTime, lines: JournalLines, c
     def section(attr: str) -> tuple:
         kept = tuple(s for s in (getattr(current, attr) if current else ()) if _still_held((s,), held))
         return kept + tuple(s for s in getattr(lines, attr) if s not in kept)
-    written = JournalDay(day, time, section("worked_on"), section("decided"), section("finished"),
+    steps = finished_steps(snap, day)
+    finished = (*((steps,) if steps else ()), *(s for s in section("finished") if not _STEPS_LINE.fullmatch(s.text)))
+    written = JournalDay(day, time, section("worked_on"), section("decided"), finished,
                          (*(current.corrections if current else ()),
                           *((corrected,) if corrected and (not current or corrected not in current.corrections) else ())))
     return Decision(snap.changes().put_journal(written), Outcome(True, ()))
@@ -1155,8 +1176,8 @@ def board(snap: Snapshot) -> Answer:
         new, changed = marks(p.history, seen.get(p.id))
         columns[p.status].append(Card(
             pursuit=p.id, name=p.name, kind_line=kind_line(p, snap.settings().timezone), last_worked=p.last_worked,
-            left_off=p.resume.left_off[0] if p.resume.left_off else None,
-            next_step=p.next_step.text if p.next_step and p.next_step.ended is None else None,
+            left_off=messages.on_board(p.resume.left_off[0]) if p.resume.left_off else None,
+            next_step=messages.on_board(p.next_step.text) if p.next_step and p.next_step.ended is None else None,
             focus=p.focus, new=new, changed=changed, proposals=p.proposals,
             resume_prompt=messages.resume_prompt(p, snap), upto=max((h.id for h in p.history), key=_n, default=None)))
     order = lambda c: (not c.focus, -(c.last_worked or date.min).toordinal(), c.name)

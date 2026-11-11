@@ -21,14 +21,15 @@ fails if a Style lacks a renderer).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Sequence
 from zoneinfo import ZoneInfo
 
-from .model import (Answer, Cite, Count, EvidenceId, Fact, Followup, HarnessId, Outcome, Pursuit, SentBrief,
-                    Statement, harness_of)
+from .model import (Answer, Cite, Count, EvidenceId, Fact, Followup, HarnessId, Outcome, Pursuit, ResumeNote,
+                    SentBrief, Statement, harness_of)
 from .record import Snapshot
 
 RESUME_HINT = 'Reply "prompt" for a paste-in prompt.'   # how a ResumeQ answer ends (D Q2)
@@ -297,6 +298,32 @@ def _last(p: Pursuit, style: Style) -> list[str]:
     return [f"Last: {statement(s, style)}"]
 
 
+_PLAIN = re.compile(r"[a-z]{2,}")
+_ABBREVIATION = re.compile(r"(?:^|[^A-Za-z])[A-Za-z]\.$")
+
+
+def on_board(s: Statement) -> Statement:
+    """A Resume Note line as a Board card shows it: the first word in capitals when it is a plain
+    lowercase word, one trailing full stop taken off unless the line ends in "..", "etc." or a
+    single letter's abbreviation ("B.", "i.e."). The record holds the line as messages print it."""
+    text = s.text
+    first, _, rest = text.partition(" ")
+    if _PLAIN.fullmatch(first):
+        text = first.capitalize() + (" " + rest if rest else "")
+    last = text.rsplit(" ", 1)[-1]
+    if text.endswith(".") and not text.endswith("..") and last != "etc." and not _ABBREVIATION.search(last):
+        text = text[:-1]
+    return _reworded(s, text)
+
+
+DECIDED_SHOWN = 20
+"""The newest Decided lines of a Resume Note that Atlas sends; the Pursuit file keeps them all."""
+
+
+def recent_decided(r: ResumeNote) -> tuple[Statement, ...]:
+    return tuple(r.decided[-DECIDED_SHOWN:])
+
+
 def _reworded(s: Statement, text: str) -> Statement:
     return Fact(text, s.source) if isinstance(s, Fact) else type(s)(text, s.basis)
 
@@ -310,14 +337,28 @@ def answer(a: Answer, style: Style) -> str: raise NotImplementedError
 def outcome(o: Outcome, style: Style) -> str: raise NotImplementedError
 
 
+def places(where: Sequence[Statement]) -> tuple[Statement, ...]:
+    """A Resume Note's Where lines as they are shown: places that are sibling folders on one
+    machine, with no branch, show as one line naming their parent folder and each folder, the
+    first place's citation kept: "ubuntu-pc, ~/home/greenhouse (firmware/ and dashboard/)"."""
+    parts = [s.text.split(", ") for s in where]
+    if len(parts) < 2 or any(len(x) != 2 or x[0] != parts[0][0] for x in parts):
+        return tuple(where)
+    split = [folder.rpartition("/") for _, folder in parts]
+    if not split[0][0] or any(parent != split[0][0] for parent, _, _ in split):
+        return tuple(where)
+    shown = " and ".join(f"{name}/" for _, _, name in split)
+    return (_reworded(where[0], f"{parts[0][0]}, {split[0][0]} ({shown})"),)
+
+
 def resume_prompt(p: Pursuit, snap: Snapshot) -> str:
     """V3's paste-in prompt, deterministic from the Resume Note: Resuming "<name>", Where, Left
     off, Decided, Open question, Sessions to reopen (Harness, title, day), Next Step. Works in
     any Harness (R3 Q5). Text meant to leave Atlas, so every Fact is a bare [F] (G1). A part
     with nothing in it has no line, and a part with several statements has a line for each."""
     style = Style.TELEGRAM
-    lines = [f'Resuming "{p.name}".', *(f"Where: {s.text}" for s in p.resume.where)]
-    for label, part in (("Left off", p.resume.left_off), ("Decided", p.resume.decided),
+    lines = [f'Resuming "{p.name}".', *(f"Where: {s.text}" for s in places(p.resume.where))]
+    for label, part in (("Left off", p.resume.left_off), ("Decided", recent_decided(p.resume)),
                         ("Open question", p.resume.open_questions)):
         lines += [f"{label}: {statement(s, style)}" for s in part]
     if p.resume.reopen:

@@ -2,13 +2,15 @@
 
 Text meant to leave Atlas (resume_prompt, a status to forward) is not built yet (#4, #16), so its
 row goes through statement() with no citation time, which is how that text renders a Fact."""
+import re
+from dataclasses import replace
 from datetime import date, datetime, timezone
 
 import pytest
 
 from atlas import messages
 from atlas.messages import Bare, Style
-from atlas.model import Cite, Count, Fact, Inference
+from atlas.model import Cite, Count, EvidenceId, Fact, Inference
 from snapshots import at
 
 NOW = at(date(2026, 11, 16), "07:30")
@@ -70,3 +72,50 @@ def test_an_inference_is_marked_i_even_when_asked_to_cite():
 ])
 def test_the_prompt_hint_names_each_step(steps, line):
     assert messages.prompt_hint(steps) == line
+
+
+@pytest.mark.parametrize("text, shown", [
+    ("it fails only when two workers share Redis db 0.", "It fails only when two workers share Redis db 0"),
+    ("Run test_retry.py ten times in a row.", "Run test_retry.py ten times in a row"),
+    ("12 of 40 posts moved", "12 of 40 posts moved"),
+])
+def test_the_board_shows_a_resume_note_line_capitalised_with_no_trailing_period(text, shown):
+    cite = Cite(EvidenceId("cc-aaaa"), "Claude Code", datetime(2026, 11, 14, tzinfo=timezone.utc))
+    assert messages.on_board(Fact(text, cite)) == Fact(shown, cite)
+    assert messages.on_board(Inference(text, (EvidenceId("cc-aaaa"),))) == Inference(shown, (EvidenceId("cc-aaaa"),))
+
+
+@pytest.mark.parametrize("where, shown", [
+    (["ubuntu-pc, ~/home/greenhouse/firmware", "ubuntu-pc, ~/home/greenhouse/dashboard"],
+     ["ubuntu-pc, ~/home/greenhouse (firmware/ and dashboard/)"]),
+    (["ubuntu-pc, ~/home/greenhouse/firmware"], ["ubuntu-pc, ~/home/greenhouse/firmware"]),
+    (["ubuntu-pc, ~/code/a, branch main", "ubuntu-pc, ~/code/b"], ["ubuntu-pc, ~/code/a, branch main", "ubuntu-pc, ~/code/b"]),
+    (["ubuntu-pc, ~/code/a", "laptop, ~/code/b"], ["ubuntu-pc, ~/code/a", "laptop, ~/code/b"]),
+    (["ubuntu-pc, ~/code/a", "ubuntu-pc, ~/work/b"], ["ubuntu-pc, ~/code/a", "ubuntu-pc, ~/work/b"]),
+])
+def test_places_in_sibling_folders_of_one_machine_show_as_one_where_line(where, shown):
+    cite = Cite(EvidenceId("cc-aaaa"), "Claude Code", datetime(2026, 11, 11, tzinfo=timezone.utc))
+    assert messages.places([Fact(w, cite) for w in where]) == tuple(Fact(s, cite) for s in shown)
+
+
+@pytest.mark.parametrize("text", ["https://example.org/a.b.", "iPhone build broke.", "test_retry fails",
+                                  "wait for the reply...", "x86 build etc.", "a plan for step 2", "ßtraße liegt da.",
+                                  "ﬁx the build", "ask Dr. Smith about it, i.e.", "pick plan B."])
+def test_the_board_leaves_a_line_that_is_not_a_plain_sentence_as_it_is_or_only_drops_its_full_stop(text):
+    cite = Cite(EvidenceId("cc-aaaa"), "Claude Code", datetime(2026, 11, 14, tzinfo=timezone.utc))
+    shown = {"iPhone build broke.": "iPhone build broke", "wait for the reply...": "Wait for the reply...",
+             "ßtraße liegt da.": "ßtraße liegt da", "ask Dr. Smith about it, i.e.": "Ask Dr. Smith about it, i.e.",
+             "pick plan B.": "Pick plan B."}.get(text, text)
+    assert messages.on_board(Fact(text, cite)).text == shown
+
+
+def test_what_atlas_sends_of_a_resume_note_keeps_its_newest_twenty_decisions():
+    from atlas import agents, ask
+    from snapshots import pursuit, snapshot
+    p = pursuit("p-4k7q", "Billing export service")
+    decided = tuple(Inference(f"Decision number {n}.", ("nt-0seed000",)) for n in range(1, 26))
+    p = replace(p, resume=replace(p.resume, decided=decided))
+    snap = snapshot([p])
+    for shown in (messages.resume_prompt(p, snap), ask.resume(snap, p, NOW), agents.resume(snap, p, NOW)[0]):
+        numbers = [int(n) for n in re.findall(r"Decision number (\d+)", shown)]
+        assert numbers == list(range(6, 26))

@@ -27,6 +27,7 @@ import zstandard
 
 from atlas.channel import Delivered
 from atlas import app, rules, sources
+from atlas.telegram import styled
 from atlas.app import Atlas
 from atlas.librarian import Grouping, PursuitDraft
 from atlas.model import (Area, Forgotten, HarnessId, HarnessSetting, Inference, Kind, Membership, Note, NoteOrigin,
@@ -552,10 +553,10 @@ def test_a_tick_that_sends_during_a_backfill_leaks_no_mirror_row(tmp_path, throw
         assert go_on.wait(10)
         return real(*args, **kwargs)
 
-    def mirrored(channel, text):
+    def mirrored(channel, text, kind):
         sent.append(text)
         run(db, "INSERT INTO messages (session_id, role, content, timestamp) VALUES ('chat', 'assistant', ?, ?)",
-            text, T + 60)
+            styled(text, kind), T + 60)
         return Delivered("telegram:5550001", ("41",))
 
     monkeypatch.setattr(sources, "collect", paused)
@@ -595,9 +596,9 @@ def test_a_brief_sent_bare_before_masking_and_resent_masked_leaves_both_mirror_r
     run(db, MIRROR, text, T + 60)
     sent = []
 
-    def mirrored(channel, t):
+    def mirrored(channel, t, kind):
         sent.append(t)
-        run(db, MIRROR, t, T + 120)
+        run(db, MIRROR, styled(t, kind), T + 120)
         return Delivered("telegram:5550001", ("42",))
 
     monkeypatch.setattr(app.channel.Telegram, "send", mirrored)
@@ -616,9 +617,9 @@ def test_an_agent_row_that_differs_from_a_sent_brief_only_by_its_secret_is_colle
     monkeypatch.setattr(rules.messages, "brief", lambda *args: f"{composed(*args)}\nInvented {KEY}")
     sent = []
 
-    def mirrored(channel, text):
+    def mirrored(channel, text, kind):
         sent.append(text)
-        run(db, MIRROR, text, T + 60)
+        run(db, MIRROR, styled(text, kind), T + 60)
         run(db, MIRROR, text.replace("[secret: api key]", "sk-proj-" + "Zy9xW7vU5tS3rQ1pO9nM7lK5jI3hG1fE"), T + 120)
         return Delivered("telegram:5550001", ("42",))
 

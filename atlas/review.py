@@ -198,7 +198,8 @@ def _own_line(p: Pursuit, h: HistoryLine) -> tuple[str, str]:
     text = h.statement.text.rstrip(".")
     if text.startswith("Created"):
         rest = text.removeprefix("Created").removeprefix(" it")
-        return "created", f"Created {p.name} ({p.area}){rest}. [F]"
+        counted = re.fullmatch(r" from \d+ Sessions?", rest)
+        return "created", f"Created {p.name} ({p.area}){counted and _built_from(p, h) or rest}. [F]"
     if text.startswith(rules.KIND_CHANGED):
         return "kind", f"Changed {p.name}{text.removeprefix('Changed Kind')}. {_mark(h.statement)}"
     if text.startswith("Active again"):
@@ -206,6 +207,18 @@ def _own_line(p: Pursuit, h: HistoryLine) -> tuple[str, str]:
     if text == neglect.PARKED_BY_SILENCE.rstrip("."):
         return "parked", f'Parked {p.name} after two unanswered asks; reply "continue" to undo it. [F]'
     return "other", f"{p.name}: {text}. {_mark(h.statement)}"
+
+
+def _built_from(p: Pursuit, h: HistoryLine) -> str | None:
+    """" from your ChatGPT Sessions": for a creation line that counts its Sessions, the Sessions the
+    Pursuit held when Atlas created it, by their Harness when they share one, else by their number.
+    None when it lists none of them."""
+    ids = list(dict.fromkeys(m.evidence for m in p.sessions if m.at <= h.at))
+    harnesses = {harness_of(id) for id in ids}
+    if not ids or None in harnesses:
+        return None
+    s = "" if len(ids) == 1 else "s"
+    return f" from your {harnesses.pop().label} Session{s}" if len(harnesses) == 1 else f" from {len(ids)} Sessions"
 
 
 def _by_rule(p: Pursuit, rule: str, period: Period) -> str:

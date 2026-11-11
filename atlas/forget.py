@@ -121,9 +121,13 @@ class _Gone:
 
 
 def _closure(snap: Snapshot, ids: frozenset[EvidenceId]) -> _Gone:
+    """A Fact read from an agent's Note goes with the Session the Note was written in."""
+    notes = tuple(n for n in snap.notes() if (n.origin is NoteOrigin.HAND_EDIT
+                  and {*n.derived_from, *sessions_cited(n.text, n.diff or "")} & ids)
+                  or (n.origin in (NoteOrigin.AGENT, NoteOrigin.REFUSED_UPDATE) and set(n.derived_from) & ids))
     pursuits = []
     for p in snap.pursuits():
-        after, counts = _without(p, ids)
+        after, counts = _without(p, ids | {n.id for n in notes if n.origin is NoteOrigin.AGENT})
         if after != p:
             pursuits.append((p, after, counts))
     days = []
@@ -133,9 +137,6 @@ def _closure(snap: Snapshot, ids: frozenset[EvidenceId]) -> _Gone:
         if lines or set(j.evidence) & ids:
             days.append((day, lines))
     profile = sum(1 for e in snap.profile().entries if cites(e.statement) & ids)
-    notes = tuple(n for n in snap.notes() if (n.origin is NoteOrigin.HAND_EDIT
-                  and {*n.derived_from, *sessions_cited(n.text, n.diff or "")} & ids)
-                  or (n.origin in (NoteOrigin.AGENT, NoteOrigin.REFUSED_UPDATE) and set(n.derived_from) & ids))
     reviews = tuple((r, n) for r in snap.reviews()
                     if (n := len({line for id, lines in r.drawn_from if id in ids for line in lines})))
     return _Gone(tuple(pursuits), tuple(days), profile, notes, reviews)
