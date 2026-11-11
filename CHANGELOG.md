@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed: one model answer with a text over its field's maximum stopped backfill from writing any more cards, and the same Session came first on every run, so no Pursuits were ever built. Atlas now tells the model each field's maximum, and skips a Session whose answer it cannot use, asking again on the next backfill.
 - Fixed: with an Anthropic model, or OpenAI's strict structured output, every model call failed, so backfill made no Pursuits and the tick filed nothing. Atlas now sends each answer's shape closed, with every field required, which every provider Hermes supports accepts.
 
 ## 0.1.0

@@ -592,21 +592,34 @@ class Atlas:
 
     def _write_cards(self, librarian: Librarian) -> bool:
         """A card for every Session that has none, or one Atlas cannot read, committed BATCH at a
-        time. Stops at the first model call that fails, logged; returns whether every Session has
-        its card."""
+        time. Stops at the first model call that fails, logged. A Session whose answer is unusable
+        is skipped, logged, and asked again next run, unless no Session has a card. Returns whether
+        the cards are complete enough to build on."""
         snap = self._record.snapshot()
         todo = [h.id for h in snap.held().sessions() if _readable_card(snap, h.id) is None]
+        skipped: list[Unusable] = []
         for start in range(0, len(todo), BATCH):
             cards = []
             for id in todo[start:start + BATCH]:
                 try:
                     cards.append(librarian.card(snap.session(id)))
+                except Unusable as error:
+                    skipped.append(error)
                 except Exception as error:
                     log.warning("Atlas stopped writing cards: the model gave no card (%s). Run backfill again to "
                                 "go on", _why(error))
                     self._put_cards(cards)
                     return False
             self._put_cards(cards)
+        if not skipped:
+            return True
+        snap = self._record.snapshot()
+        if not any(_readable_card(snap, h.id) for h in snap.held().sessions()):
+            log.warning("Atlas stopped writing cards: the model gave no card (%s). Run backfill again to go on",
+                        _why(skipped[0]))
+            return False
+        log.warning("Atlas wrote no card for %d Sessions: the model's answer was unusable (%s). The next "
+                    "backfill asks again", len(skipped), _why(skipped[0]))
         return True
 
     def _put_cards(self, cards: Sequence[SessionCard]) -> None:

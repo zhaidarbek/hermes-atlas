@@ -67,6 +67,9 @@ FIELD_MAX = {"name": 80, "quote": 200, "reason": 300}
 field holds at most TEXT_MAX. The tutorial's longest are about half of each. An answer with a
 longer text is unusable, never cut into the record."""
 TEXT_MAX = 400
+LIMITS = ("Keep every text short: " + ", ".join(f"a {f} under {n} characters" for f, n in FIELD_MAX.items())
+          + f", and any other text under {TEXT_MAX}. A longer text makes the whole answer unusable.")
+"""Said to the model with every call, so its answers fit FIELD_MAX and TEXT_MAX."""
 
 
 def strict(schema: Mapping) -> dict:
@@ -96,7 +99,8 @@ class HostLlm:
         self._ctx = ctx
 
     def structured(self, task: str, instructions: str, input: str, schema: Mapping) -> dict:
-        result = self._ctx.llm.complete_structured(instructions=instructions, input=[{"type": "text", "text": input}],
+        result = self._ctx.llm.complete_structured(instructions=f"{instructions}\n\n{LIMITS}",
+                                                   input=[{"type": "text", "text": input}],
                                                    json_schema=strict(schema), task=task, purpose=schema.get("title"))
         if not isinstance(result.parsed, dict):
             raise Unusable(f"{task} answered with {result.content_type}, not a JSON object")
