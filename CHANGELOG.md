@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: with an Anthropic model, or OpenAI's strict structured output, every model call failed, so backfill made no Pursuits and the tick filed nothing. Atlas now sends each answer's shape closed, with every field required, which every provider Hermes supports accepts.
+
 ## 0.1.0
 
 The first release.

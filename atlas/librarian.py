@@ -69,6 +69,25 @@ longer text is unusable, never cut into the record."""
 TEXT_MAX = 400
 
 
+def strict(schema: Mapping) -> dict:
+    """`schema` in the strict form that structured output accepts on every provider: each object
+    closed (additionalProperties false) and naming every property as required. Anthropic and
+    OpenAI refuse an object left open, and OpenAI one with an optional property; Hermes strips
+    what a provider such as Gemini does not take. An optional property must therefore allow null,
+    which the model then gives in its place."""
+    out = dict(schema)
+    for key in ("anyOf", "oneOf", "allOf"):
+        if key in schema:
+            out[key] = [strict(s) for s in schema[key]]
+    if "properties" in schema:
+        out["properties"] = {name: strict(s) for name, s in schema["properties"].items()}
+        out["required"] = list(schema["properties"])
+        out["additionalProperties"] = False
+    if isinstance(schema.get("items"), Mapping):
+        out["items"] = strict(schema["items"])
+    return out
+
+
 class HostLlm:
     """The Llm port over Hermes's ctx.llm. It reads ctx.llm only when a call is made, never in
     register(ctx), and routes each call through the plugin's own auxiliary task."""
@@ -78,7 +97,7 @@ class HostLlm:
 
     def structured(self, task: str, instructions: str, input: str, schema: Mapping) -> dict:
         result = self._ctx.llm.complete_structured(instructions=instructions, input=[{"type": "text", "text": input}],
-                                                   json_schema=dict(schema), task=task, purpose=schema.get("title"))
+                                                   json_schema=strict(schema), task=task, purpose=schema.get("title"))
         if not isinstance(result.parsed, dict):
             raise Unusable(f"{task} answered with {result.content_type}, not a JSON object")
         return result.parsed
