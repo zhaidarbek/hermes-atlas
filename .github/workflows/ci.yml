@@ -1,10 +1,11 @@
 name: CI
 
-# Runs when a commit lands on main or hackathon, and on demand from the Actions tab.
-# Work branches and pull requests do not start a run.
+# Runs when a commit lands on main or hackathon, on every pull request, and on demand from the
+# Actions tab. Other work branches do not start a run.
 on:
   push:
     branches: [main, hackathon]
+  pull_request:
   workflow_dispatch:
 
 jobs:
