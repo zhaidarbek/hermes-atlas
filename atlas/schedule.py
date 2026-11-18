@@ -38,7 +38,7 @@ from zoneinfo import ZoneInfo
 
 from . import _hermes, pausing, review, rules
 from .model import SendStatus, resend
-from .record import Snapshot
+from .record import Snapshot, _txn
 
 JOB = "atlas-tick"
 TICK_SCRIPT = "#!/bin/sh\nexec hermes atlas tick --quiet\n"
@@ -111,7 +111,8 @@ class TickLease:
     """Context manager: fcntl.flock(LOCK_EX | LOCK_NB) on .atlas/tick.lock; `.held` False if busy.
     A tick never waits, so a long backfill or collect holding it never delays the send phase.
     Backfill waits (`wait=True`) for a tick's collect to finish. Never makes the record folder:
-    while there is none, `.held` is False."""
+    while there is none, `.held` is False. Makes .atlas inside it, but follows no link at .atlas or
+    the lock: OSError(ELOOP or ENOTDIR), as _txn.write_lock."""
     NAME = "tick.lock"
 
     def __init__(self, root: Path, wait: bool = False) -> None:
@@ -123,9 +124,14 @@ class TickLease:
     def __enter__(self) -> "TickLease":
         try:
             self._path.parent.mkdir(exist_ok=True)
-            self._file = open(self._path, "a+b")
+            folder = os.open(self._path.parent, _txn.FOLDER)
         except FileNotFoundError:
             return self
+        try:
+            self._file = open(self.NAME, "a+b", opener=lambda name, flags: os.open(
+                name, flags | os.O_NOFOLLOW, 0o600, dir_fd=folder))
+        finally:
+            os.close(folder)
         try:
             fcntl.flock(self._file, fcntl.LOCK_EX | (0 if self._wait else fcntl.LOCK_NB))
             self.held = True
