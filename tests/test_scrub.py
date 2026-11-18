@@ -526,3 +526,11 @@ def test_a_long_run_costs_under_a_second_and_grows_with_its_length(name):
     large = fastest(scrub, LONG[name](GLUED_LENGTH))
     assert large < 1
     assert large < 8 * fastest(scrub, LONG[name](GLUED_LENGTH // 4)) + 0.02
+
+
+def test_many_values_after_masks_cost_what_their_length_does():
+    """Each value read on after a mask joins the names still to read in order. Only megabytes show
+    how: lines that each go on after a mask, then many names. Four times the text cost 4.1 times as
+    much with those names kept in a heap, and 5.7 times when each value moved every name after it."""
+    def text(n): return "pwd=[secret: a]Hunt3r9[secret: a]Hunt3r9\n" * (n // 82) + "pwd=a\n" * (n // 12)
+    assert fastest(scrub, text(2_000_000)) < 5 * fastest(scrub, text(500_000))
