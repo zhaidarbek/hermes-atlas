@@ -234,9 +234,12 @@ def directory(f, size: int) -> None:
     if at < 0 or len(tail) - at < 22:
         raise NotAnExport("no directory")
     entries, length = struct.unpack("<HI", tail[at + 10:at + 16])
-    if at >= 20 and tail[at - 20:at - 16] == _LOCATOR64:
-        (offset,) = struct.unpack("<Q", tail[at - 12:at - 4])
-        if offset != size - len(tail) + at - 76:
+    end = size - len(tail) + at
+    f.seek(max(end - 20, 0))
+    locator = f.read(20)
+    if end >= 20 and locator[:4] == _LOCATOR64:
+        (offset,) = struct.unpack("<Q", locator[8:16])
+        if offset != end - 76:
             raise NotAnExport("no directory")
         f.seek(offset)
         record = f.read(56)
@@ -352,7 +355,7 @@ def _put_cost(c: Conversation) -> int:
     session.md written and read back hold it, and _PER_LINE for each line of it, which session.md
     is written from and read back as a list of. Measured on CPython 3.12 and 3.14: never more than
     127 bytes a line, and an import took at most 1.03 times this and `_cost` together for a file
-    of one conversation, 1.25 times for one of many, which are put a batch at a time."""
+    of one conversation, 1.4 times for one of many alike, which are put a batch at a time."""
     text = _gpt_text if c.harness is HarnessId.CHATGPT else _claude_text
     texts = [text(line["message"]) for line in c.lines[1:]]
     width = 1 if all(t.isascii() for t in texts) else 2 if max(map(max, texts)) <= "\uffff" else 4
