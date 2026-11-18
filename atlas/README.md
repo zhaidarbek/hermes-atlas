@@ -243,8 +243,8 @@ T3 Code is an Interface that runs the other Harnesses: Atlas reads it to learn w
 - reads up to 20 export files and puts up to 500 conversations into the record; a larger export goes on over the next ticks;
 - reads a file only once it has not changed for a minute, and never one that is a link;
 - reads only the conversation files inside, in memory, never extracts the archive and never opens `group_chats.json`;
-- refuses an archive larger than 2 GiB or with more than 100,000 entries, or whose conversation files would take more than about 1 GiB of memory;
-- deletes the zip from the inbox once every conversation in it is in the record. A file it cannot read stays in the inbox, and the Settings tab and the Review say so.
+- refuses an archive larger than 2 GiB or with more than 100,000 entries, or whose conversation files would take more than about 1 GiB of memory to read and to put in the record, or are compressed in a way neither service uses;
+- deletes the zip from the inbox once every conversation in it is in the record. A file it cannot read, or cannot read all of, stays in the inbox, and the Settings tab and the Review say so.
 
 A late export can add Sessions to days the Journal already has. Atlas then writes that day again and adds a "Corrected" line.
 

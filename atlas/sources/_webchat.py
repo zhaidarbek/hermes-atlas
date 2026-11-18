@@ -11,7 +11,10 @@ An export is the most hostile input Atlas reads: a ZIP a stranger could have cra
   MAX_DIRECTORY); each shard (MAX_SHARD) and all shards together (MAX_READ), each checked against
   the size the archive declares and the bytes it actually inflates to, so a zip bomb stops at the
   cap; and what parsing the shards would build (MAX_PARSED), bounded from their bytes as they
-  inflate, before json builds anything. More than MAX_CONVERSATIONS conversations fail the file.
+  inflate, before json builds anything, with what putting the largest conversation in the record
+  builds on top. More than MAX_CONVERSATIONS conversations fail the file.
+- A shard is inflated only when it is stored or deflated, the methods both vendors write.
+- A shard Atlas reads no list of conversations from counts as a conversation it could not read.
 - A time outside EARLIEST to a day past the tick is no time: a turn without one is placed as an
   undated one, and a conversation left with no time at all is broken.
 - A file that fails is kept, and only its failure's type is reported, never its name or text.
@@ -51,7 +54,8 @@ MAX_DIRECTORY = 8 << 20
 MAX_SHARD = 256 << 20
 MAX_READ = 1 << 30
 MAX_PARSED = 1 << 30
-"""What json may build from all shards of one file, as `_cost` bounds it from their bytes."""
+"""What json may build from all shards of one file, as `_cost` bounds it from their bytes, and what
+putting its largest conversation in the record builds on top, as `_put_cost` bounds it."""
 MAX_CONVERSATIONS = 20_000
 EARLIEST = datetime(2015, 1, 1, tzinfo=timezone.utc)
 AHEAD = timedelta(days=1)
@@ -218,8 +222,11 @@ _LOCATOR64 = b"PK\x06\x07"
 
 def directory(f, size: int) -> None:
     """Refuses an archive whose end record states more than MAX_ENTRIES entries or a directory
-    larger than MAX_DIRECTORY, read from the end record (zip64 too) before zipfile builds an entry
-    for each. zipfile reads the directory by its stated size, so the size bounds what it builds."""
+    larger than MAX_DIRECTORY, read from the end record before zipfile builds an entry for each.
+    zipfile reads the directory by its stated size, so the size bounds what it builds. zipfile
+    takes the zip64 record whenever its locator stands before the end record, whatever the end
+    record states, and its releases differ on where they read it: at the offset the locator
+    names, or right before the locator. So a locator must name the record right before it."""
     tail_size = min(size, 22 + 0xFFFF)
     f.seek(size - tail_size)
     tail = f.read(tail_size)
@@ -227,9 +234,12 @@ def directory(f, size: int) -> None:
     if at < 0 or len(tail) - at < 22:
         raise NotAnExport("no directory")
     entries, length = struct.unpack("<HI", tail[at + 10:at + 16])
-    if (entries == 0xFFFF or length == 0xFFFFFFFF) and at >= 20 and tail[at - 20:at - 16] == _LOCATOR64:
-        (offset,) = struct.unpack("<Q", tail[at - 12:at - 4])
-        if offset + 56 > size:
+    end = size - len(tail) + at
+    f.seek(max(end - 20, 0))
+    locator = f.read(20)
+    if end >= 20 and locator[:4] == _LOCATOR64:
+        (offset,) = struct.unpack("<Q", locator[8:16])
+        if offset != end - 76:
             raise NotAnExport("no directory")
         f.seek(offset)
         record = f.read(56)
@@ -264,15 +274,16 @@ def parse_archive(archive: zipfile.ZipFile, parsed: int = 0) -> Parsed:
     budget, room = MAX_READ, parsed or MAX_PARSED
     harness: HarnessId | None = None
     found: dict[str, tuple[float, Conversation]] = {}
-    broken = skipped = 0
+    broken = skipped = largest = 0
     for entry in shards:
         data, cost = _inflate(archive, entry, min(MAX_SHARD, budget), room)
         budget -= len(data)
         room -= cost
         items = json.loads(data)
         del data
-        if isinstance(items, dict):
-            items = items.get("conversations", [])
+        if isinstance(items, dict) and not isinstance(items := items.get("conversations"), list):
+            broken += 1
+            continue
         if not isinstance(items, list):
             raise NotAnExport("shape")
         if len(items) > MAX_CONVERSATIONS:
@@ -294,6 +305,7 @@ def parse_archive(archive: zipfile.ZipFile, parsed: int = 0) -> Parsed:
             if c is None:
                 skipped += 1
                 continue
+            largest = max(largest, _put_cost(c))
             updated = _updated(item)
             if c.key in found:
                 skipped += 1
@@ -301,6 +313,8 @@ def parse_archive(archive: zipfile.ZipFile, parsed: int = 0) -> Parsed:
                 found[c.key] = (updated, c)
         if len(found) > MAX_CONVERSATIONS:
             raise TooLarge("conversations")
+    if largest > room:
+        raise TooLarge("put")
     return Parsed(harness, tuple(c for _, c in found.values()), broken, group, skipped)
 
 
@@ -332,11 +346,29 @@ def _cost(size: int, tokens: int, per_byte: int) -> int:
     return size * per_byte + tokens * _PER_TOKEN
 
 
+_PER_LINE = 128
+
+
+def _put_cost(c: Conversation) -> int:
+    """At most what putting the conversation in the record builds on top of what json built: its
+    text four more times at the width of its widest character, as the raw copy, the turns and
+    session.md written and read back hold it, and _PER_LINE for each line of it, which session.md
+    is written from and read back as a list of. Measured on CPython 3.12 and 3.14: never more than
+    127 bytes a line, and an import took at most 1.03 times this and `_cost` together for a file
+    of one conversation, 1.4 times for one of many alike, which are put a batch at a time."""
+    text = _gpt_text if c.harness is HarnessId.CHATGPT else _claude_text
+    texts = [text(line["message"]) for line in c.lines[1:]]
+    width = 1 if all(t.isascii() for t in texts) else 2 if max(map(max, texts)) <= "\uffff" else 4
+    return sum(map(len, texts)) * 4 * width + sum(t.count("\n") for t in texts) * _PER_LINE
+
+
 def _inflate(archive: zipfile.ZipFile, entry: zipfile.ZipInfo, cap: int, room: int) -> tuple[bytes, int]:
     """The entry's bytes and what parsing them may build, read in chunks and refused as soon as
     they pass `cap`, the size the archive declares for it, or `room` for what parsing builds."""
     if entry.flag_bits & 0x1:
         raise NotAnExport("encrypted")
+    if entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+        raise NotAnExport("compression")
     if entry.file_size > cap:
         raise TooLarge("shard")
     out = bytearray()
