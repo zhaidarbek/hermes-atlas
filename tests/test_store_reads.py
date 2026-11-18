@@ -1,6 +1,9 @@
 """What the hardened store reads must still do for an ordinary store."""
+import os
 import sqlite3
 from contextlib import closing
+
+import pytest
 
 from atlas.app import Atlas
 from atlas.model import Sent
@@ -84,3 +87,30 @@ def test_a_compressed_rollout_of_ordinary_text_is_collected(tmp_path, throwaway_
     rec = record(tmp_path, CX)
     Atlas(rec, None).backfill(NOW)
     assert held(rec)["long"][0] == ("owner", said.strip())
+
+
+@pytest.mark.parametrize("beside", ["another name", "a rollback journal"])
+def test_a_store_with_a_linked_wal_beside_it_is_refused_before_sqlite_opens_it(throwaway_home, monkeypatch, beside):
+    db = wal_store(throwaway_home)
+    if beside == "another name":
+        os.link(db, throwaway_home / "another-name.db")
+    else:
+        (db.parent / f"{db.name}-journal").write_bytes(b"")
+    (throwaway_home / "elsewhere-wal").write_bytes(b"")
+    os.link(throwaway_home / "elsewhere-wal", db.parent / f"{db.name}-wal")
+    opened, connect = [], sqlite3.connect
+    monkeypatch.setattr(_adapters.sqlite3, "connect", lambda *args, **kw: opened.append(args[0]) or connect(*args, **kw))
+    with pytest.raises(Exception) as refused:
+        _adapters._read_db(_adapters._database(db, db.parent), lambda con: None)
+    assert opened == [], "SQLite opened a store whose WAL is a link to a file outside it"
+    assert refused.type is _adapters.LinkedElsewhere
+
+
+def test_a_copy_too_large_to_read_leaves_the_readable_copy_in_another_root_collected(tmp_path, throwaway_home,
+                                                                                     monkeypatch):
+    rollout(throwaway_home / ".codex", "thread-a", ["an invented ask " * 512], ["ok"])
+    rollout(tmp_path / "shared/codex", "thread-a", ["the readable copy"], ["ok"])
+    monkeypatch.setattr(_adapters, "_MOST", 4096)
+    rec = record(tmp_path, CX, roots=[tmp_path / "shared/codex"])
+    Atlas(rec, None).backfill(NOW)
+    assert held(rec)["thread-a"] == [("owner", "the readable copy"), ("agent", "ok")]
