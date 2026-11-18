@@ -191,7 +191,8 @@ class Atlas:
         settings = kept or _first_settings(found)
         self._record.create(settings, Profile(FIRST_AREAS, ()))
         problem = channel.Telegram(settings).check()
-        tick = schedule.install_tick(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser())
+        hermes_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
+        tick = schedule.install_tick(hermes_home)
         probed = {f.harness for f in found}
         own_chat = f", in Atlas's own chat {settings.channel.atlas_chat}" if settings.channel.dedicated else ""
         return SetupReport(
@@ -202,7 +203,8 @@ class Atlas:
             not_found=tuple(h.label for h in sources.STORE_HARNESSES if h not in probed),
             mcp_commands=tuple(cmd for h, cmd in MCP_ADD.items() if h in probed),
             disclosures=(*([f"Reads, never writes: {', '.join(f.root for f in found)}"] if found else []),
-                         f"Writes: {_tilde(self._record.root)}", tick, HAND_EDITS),
+                         f"Writes: {_tilde(self._record.root)}, and the script the cron job runs, "
+                         f"{_tilde(hermes_home / 'scripts' / 'atlas_tick.sh')}", tick, HAND_EDITS),
             version=".".join(__version__.split(".")[:2]),
             machine=settings.machine,
             exclusions=settings.exclusions,

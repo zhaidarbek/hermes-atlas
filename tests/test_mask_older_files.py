@@ -855,8 +855,9 @@ def test_a_link_loop_above_the_session_folders_lists_no_folder_twice_in_an_open(
         (year / name).symlink_to(".", target_is_directory=True)
     listed, scandir = [], os.scandir
 
+    # Recovery lists .atlas/txn with glob and again with iterdir, which calls os.scandir from Python 3.14.
     def observed(path="."):
-        if not isinstance(path, int):
+        if not isinstance(path, int) and not Path(path).is_relative_to(root / ".atlas/txn"):
             found = os.stat(path)
             listed.append((found.st_dev, found.st_ino))
         return scandir(path)
