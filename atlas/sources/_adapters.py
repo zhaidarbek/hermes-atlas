@@ -1205,6 +1205,7 @@ def _transaction(db: _Db, read: Callable[[sqlite3.Connection], T]) -> T:
     try:
         own, base = f"{_DESCRIPTORS}/{pin}" if pin is not None else None, db.names[-1]
         name = own if own and _same_file(own, held) else os.path.join(db.root.path, *db.names)
+        _sidecars(folder, base)                          # a linked WAL or index is refused before SQLite opens it
         at_rest = held.st_nlink == 1 and _at_rest(folder, base)
         if name == own and os.readlink(own).endswith(" (deleted)"):
             raise SwappedWhileRead(db.path.name)     # SQLite would open that name, whatever now has it
