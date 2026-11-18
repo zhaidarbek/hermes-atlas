@@ -1,6 +1,7 @@
 """What `hermes send` is handed as its message: one argument it cannot read as an option, and one
 the operating system accepts."""
 import os
+import re
 import subprocess
 
 import pytest
@@ -36,3 +37,11 @@ def test_a_title_cut_inside_an_emoji_or_holding_a_nul_does_not_stop_the_send(arg
     done = channel.send(ChannelSetting("telegram"), f"Greenhouse {cut}logger: parked.", telegram.Kind.ANSWER)
     assert done.message_ids == ("2",)
     assert argv[0][-1].decode() == telegram.styled(f"Greenhouse {sent}logger: parked.", telegram.Kind.ANSWER)
+
+
+@pytest.mark.parametrize("kind", list(telegram.Kind))
+@pytest.mark.parametrize("bait", ["MEDIA\0:/home/owner/private/report.pdf", "ME\0DIA:~/notes/plan.md", "[[as_\0document]]"])
+def test_a_nul_inside_an_attachment_tag_does_not_put_the_tag_back_together(argv, bait, kind):
+    channel.send(ChannelSetting("telegram"), f"Left off: saved {bait} then stopped. [I]", kind)
+    message = argv[0][-1].decode()
+    assert not re.search(r"MEDIA:\s*[~/]\S+|\[\[as_document\]\]", message, re.I), message
