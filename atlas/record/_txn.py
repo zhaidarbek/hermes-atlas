@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -58,15 +59,22 @@ def machinery(root: Path) -> Path:
 
 @contextmanager
 def write_lock(root: Path) -> Iterator[None]:
-    """fcntl.flock(LOCK_EX) on <root>/.atlas/write.lock. Held only while applying bytes."""
-    path = machinery(root) / "write.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a+b") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+    """fcntl.flock(LOCK_EX) on <root>/.atlas/write.lock. Held only while applying bytes. Makes no
+    folder and follows no link at .atlas or the lock: FileNotFoundError for a record setup never
+    made, OSError(ELOOP or ENOTDIR) when a link or a file stands where .atlas is."""
+    folder = os.open(machinery(root), FOLDER)
+    try:
+        fd = os.open("write.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=folder)
+    finally:
+        os.close(folder)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def stage(root: Path, files: Mapping[str, bytes | None], guards: Mapping[str, str] | None = None) -> str:
@@ -575,21 +583,28 @@ def pending(root: Path) -> dict[str, bytes | None]:
 
 
 def require_local(root: Path) -> None:
+    """Raises NotLocal when `root`, links in it followed, is on a network mount. The folder, or the
+    nearest one above it that exists, is opened before the mount table is read, so a share mounted
+    on demand is mounted by then."""
+    root = Path(os.path.realpath(root))
+    with suppress(OSError):
+        os.close(os.open(next(p for p in (root, *root.parents) if p.exists()), os.O_RDONLY | os.O_DIRECTORY))
     kind = fs_type(root, _mount_table())
     if kind in NETWORK_FS:
         raise NotLocal(f"{root} is on a {kind} mount")
 
 
 def fs_type(path: Path, mounts: str) -> str | None:
-    """The filesystem type of the mount holding `path`. `mounts` is /proc/mounts on Linux or
-    the output of `mount` on macOS."""
-    path = Path(os.path.abspath(path))
+    """The filesystem type of the mount holding `path`, links in it followed: of the mounts on the
+    deepest mount point above it, the last, which lies over the others. `mounts` is /proc/mounts on
+    Linux or the output of `mount` on macOS."""
+    path = Path(os.path.realpath(path))
     best: tuple[int, str] | None = None
     for point, kind in _parse_mounts(mounts):
         p = Path(point)
         if path == p or p in path.parents:
             depth = len(p.parts)
-            if best is None or depth > best[0]:
+            if best is None or depth >= best[0]:
                 best = (depth, kind)
     return best[1] if best else None
 
@@ -603,14 +618,21 @@ def _parse_mounts(text: str) -> list[tuple[str, str]]:
             continue
         fields = line.split()
         if len(fields) >= 3:
-            table.append((fields[1].encode().decode("unicode_escape"), fields[2]))
+            table.append((_unescaped(fields[1]), fields[2]))
     return table
+
+
+def _unescaped(point: str) -> str:
+    """A /proc/mounts mount point as a path: the kernel writes a space, tab, newline or backslash
+    in it as a backslash and three octal digits."""
+    raw = re.sub(rb"\\([0-7]{3})", lambda m: bytes([int(m.group(1), 8) & 0xFF]), os.fsencode(point))
+    return os.fsdecode(raw)
 
 
 def _mount_table() -> str:
     proc = Path("/proc/mounts")
     if proc.exists():
-        return proc.read_text()
+        return proc.read_text(errors="surrogateescape")
     return subprocess.run(["mount"], capture_output=True, text=True, check=False).stdout
 
 

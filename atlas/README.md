@@ -377,7 +377,7 @@ Atlas reads your conversations, so read this before you install. Each point name
 - The record folder, mode 0700 (`atlas/record/`). It holds a zstd-compressed copy of every Session transcript, byte for byte, under `evidence/`. A password or key you pasted into a conversation is in that copy. Atlas masks the secrets it detects (API keys, tokens, passwords, private keys, credentials in URLs) in every file it derives from the copies: transcripts, Pursuits, the Journal, Notes, briefs and the search index (`atlas/privacy.py`). Detection is best effort: a secret in a form it does not know stays unmasked. When a new version of Atlas detects more forms, the opens after the upgrade mask the files it already wrote again. For claude.ai, the copy includes the text the export extracted from files you attached.
 - This machine's host name, in `settings.md`, with each Session it copies and in each Pursuit's Where line. Backfill's last grouping call sends each draft Pursuit's Where line, host name included, to the model.
 - `$HERMES_HOME/scripts/atlas_tick.sh`, and the Hermes cron job `atlas-tick` (`atlas/schedule.py`). Atlas starts no background process of its own.
-- Outside the Session folders under `evidence/` and the exports in `inbox/`, it never changes or deletes a file in the record folder that it did not write. When it removes a Session's folder, it deletes every file in it.
+- Outside the Session folders under `evidence/` and the exports in `inbox/`, it never changes or deletes a file in the record folder that it did not write: when a file of yours is where Atlas would write one, such as a Journal day, Atlas leaves yours and writes none until you move it. When it removes a Session's folder, it deletes every file in it.
 
 **What it deletes**
 

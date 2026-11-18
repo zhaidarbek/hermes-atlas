@@ -65,3 +65,20 @@ def test_a_lease_never_waits_for_its_holder(tmp_path, lease):
 def test_the_tick_and_send_leases_are_separate_locks(tmp_path):
     with schedule.TickLease(tmp_path) as tick, schedule.SendLease(tmp_path) as send:
         assert tick.held and send.held
+
+
+@pytest.mark.parametrize("lease", [schedule.TickLease, schedule.SendLease])
+@pytest.mark.parametrize("linked", [".atlas", "the lock"])
+def test_a_lease_follows_no_link_planted_in_the_record(tmp_path, lease, linked):
+    root, elsewhere = tmp_path / "atlas", tmp_path / "elsewhere"
+    root.mkdir()
+    elsewhere.mkdir()
+    if linked == ".atlas":
+        (root / ".atlas").symlink_to(elsewhere, target_is_directory=True)
+    else:
+        (root / ".atlas").mkdir()
+        (root / ".atlas" / lease.NAME).symlink_to(elsewhere / "planted")
+    with pytest.raises(OSError):
+        with lease(root):
+            pass
+    assert list(elsewhere.iterdir()) == []

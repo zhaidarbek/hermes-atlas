@@ -84,10 +84,18 @@ def skip_key(harness: HarnessId, native_key: str) -> str:
     return "sha256:" + hashlib.sha256(f"{harness.value}:{native_key}".encode()).hexdigest()
 
 
+PART_SUFFIX = ".jsonl.zst"
+NAME_MAX = 255
+
+
 def part_file(key: str) -> str:
     """The raw/ file of a Session part: "main" -> main.jsonl.zst, "subagent:agent-1" ->
-    subagent-agent-1.jsonl.zst. Turn.part holds the key."""
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", key) + ".jsonl.zst"
+    subagent-agent-1.jsonl.zst. Turn.part holds the key. A name longer than a file system takes is
+    cut and ends in a hash of the key, and stays that name when read back as a key."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", key) + PART_SUFFIX
+    if len(name) <= NAME_MAX:
+        return name
+    return f"{name[:NAME_MAX - len(PART_SUFFIX) - 17]}-{hashlib.sha256(key.encode(errors="surrogateescape")).hexdigest()[:16]}{PART_SUFFIX}"
 
 
 def part_origin(harness: HarnessId, native_key: str, key: str) -> str:
