@@ -93,6 +93,8 @@ _OPEN = "/dev/fd"
 _MAPS = "/proc/self/maps"
 _NEAR = 16
 _PIN = getattr(os, "O_PATH", None)
+_MOST = 1 << 30                               # bytes of one store file, stored or decompressed
+_EXPANDS = 1000                               # times its stored size a compressed file may decompress to
 _SEARCH = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW
 T = TypeVar("T")
 
@@ -103,6 +105,10 @@ class Refused(PermissionError):
 
 class LinkedElsewhere(Refused):
     """A store file is a link, not a regular file, or has another link, as a hard-link backup makes."""
+
+
+class Oversized(Refused):
+    """A store file holds more than Atlas reads, or a compressed one expands further than a transcript does."""
 
 
 class SwappedWhileRead(Refused):
@@ -139,12 +145,22 @@ class _Store:
             if root is not None and not _usable(root):
                 log.warning("Atlas skipped a %s folder named in settings (%s)", self.label, UnicodeEncodeError.__name__)
                 continue
-            if root is not None and self.store(root).exists() and os.path.realpath(root) not in map(os.path.realpath, roots):
-                if root is not primary and linked(root):
-                    log.warning("Atlas skipped a %s folder named in settings (%s)", self.label, LinkedElsewhere.__name__)
-                    continue
+            try:
+                new = (root is not None and self.store(root).exists()
+                       and os.path.realpath(root) not in map(os.path.realpath, roots))
+                refused = new and root is not primary and linked(root)
+            except OSError as error:
+                log.warning("Atlas skipped a %s folder it could not look in (%s)", self.label, type(error).__name__)
+                continue
+            if refused:
+                log.warning("Atlas skipped a %s folder named in settings (%s)", self.label, LinkedElsewhere.__name__)
+            elif new:
                 roots.append(root)
         return roots
+
+    def added(self, root: Path) -> bool:
+        """Whether `root` is a folder the owner added in Settings, which is read by no link."""
+        return root != self.primary()
 
     def probe(self, s: Settings, folded: Mapping[Key, Key]) -> Found | None:
         roots = self.roots(s)
@@ -285,7 +301,7 @@ class _Harness(_Store):
         if not d.turns:
             return None
         stamps = [t.at for t in d.turns if t.at] + [d.started]
-        title = d.title or next((_title(t.text) for t in d.turns if t.role == "owner"), "")
+        title = _encodable(d.title or next((_title(t.text) for t in d.turns if t.role == "owner"), ""))
         evidence = SessionEvidence(
             id=evidence_id(self.key, LOCAL, d.key), harness=self.key, interface=d.interface, namespace=LOCAL,
             native_key=d.key, title=title, started=d.started, last_at=max(stamps),
@@ -302,6 +318,12 @@ def _title(said: str) -> str:
     before any mask the cut would split, so no part of a secret is kept."""
     line = privacy.scrub(said.splitlines()[0])
     return line[:next((m.start() for m in privacy.MASK.finditer(line) if m.start() < 80 < m.end()), 80)]
+
+
+def _encodable(text: str) -> str:
+    """`text` with half a surrogate pair, which JavaScript writes for a string cut inside an emoji
+    and UTF-8 cannot hold, as U+FFFD, the way session.md writes a turn."""
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
 
 
 class _Copy(NamedTuple):
@@ -378,7 +400,7 @@ class ClaudeCode(_Harness):
 
     def _units(self, root: Path, sent: Sent) -> Iterator[Unit]:
         store = self.store(root)
-        base = _within(store)
+        base = _within(store, self.added(root))
         for transcript in _files(store, "*/*.jsonl", store, base):
             folder = transcript.path.parent / transcript.path.stem / "subagents"
             subagents = _files(folder, "**/agent-*.jsonl", store, base)
@@ -469,7 +491,7 @@ class Codex(_Harness):
             if not folder.is_dir():
                 continue
             try:
-                base = _within(folder)
+                base = _within(folder, self.added(root))
             except LinkedElsewhere as refused:
                 log.warning("Atlas skipped a Codex store folder (%s)", type(refused).__name__)
                 continue
@@ -544,7 +566,7 @@ class Devin(_Harness):
         return root.parent if root.name == "cli" else root
 
     def _units(self, root: Path, sent: Sent) -> list[Unit]:
-        db = _database(self.store(root), root)
+        db = _database(self.store(root), root, self.added(root))
         sessions, prints = _read_db(db, lambda con: _prints(con, "message_nodes", "row_id", _devin_part, self.identity))
         units = []
         for sid, row in sessions.items():
@@ -634,7 +656,7 @@ class Hermes(_Harness):
     def store(self, root: Path) -> Path: return root / "state.db"
 
     def _units(self, root: Path, sent: Sent) -> Iterator[Unit]:
-        db = _database(self.store(root), root)
+        db = _database(self.store(root), root, self.added(root))
         sessions, prints = _read_db(db, lambda con: _prints(
             con, "messages", "id", lambda session, rows: _hermes_part(session, _kept(rows, sent)), self.identity))
         chains: dict[str, list[str]] = {}
@@ -892,7 +914,7 @@ class T3Code(_Store):
     def starts(self, s: Settings, folded: Mapping[Key, Key]) -> dict[str, datetime]:
         out: dict[str, datetime] = {}
         for root in self.roots(s):
-            for thread, created in _rows(_database(self.store(root), root),
+            for thread, created in _rows(_database(self.store(root), root, self.added(root)),
                                          "SELECT thread_id, created_at FROM orchestration_v2_projection_threads "
                                          "WHERE deleted_at IS NULL AND json_extract(payload_json, "
                                          "'$.lineage.relationshipToParent') IS NOT 'subagent'"):
@@ -902,7 +924,7 @@ class T3Code(_Store):
     def lineage(self, s: Settings) -> Iterable[Lineage]:
         facts: list[Lineage] = []
         for root in self.roots(s):
-            db = _database(self.store(root), root)
+            db = _database(self.store(root), root, self.added(root))
             native: dict[str, tuple[HarnessId, str]] = {}
             for row in _dicts(db, "SELECT * FROM orchestration_v2_projection_provider_threads"):
                 ref = (json.loads(row.get("payload_json") or "{}").get("nativeThreadRef") or {})
@@ -985,27 +1007,40 @@ def _text(content: object) -> str:
     return ""
 
 
-def _within(folder: Path) -> _Folder:
+def _within(folder: Path, added: bool = False) -> _Folder:
     """The real folder a store's files must stay under. A folder Atlas may not list raises, so the
     store is logged as unreadable instead of read as empty, and so does a folder that is a link."""
     if folder.is_symlink():
         raise LinkedElsewhere(folder.name)
     with os.scandir(folder):
-        return _folder(folder)
+        return _folder(folder, added)
 
 
-def _folder(folder: Path) -> _Folder:
+def _folder(folder: Path, added: bool = False) -> _Folder:
+    """A folder's real path and stat. One under a root `added` in Settings must be reached by no
+    link, as `linked` checked by name before: its real path is the one it reads as."""
     st = os.stat(folder)
     real = os.path.realpath(folder)
+    if added and real != _unlinked(folder):
+        raise LinkedElsewhere(folder.name)
     if not os.path.samestat(os.stat(real), st):
         raise SwappedWhileRead("a store folder changed while Atlas listed it")
     return _Folder(real, st)
+
+
+def _unlinked(path: Path) -> str:
+    """The real path of `path` when no part `_through_link` looks at is a link."""
+    home = Path.home()
+    base = home if path.is_relative_to(home) else Path(path.anchor or "/")
+    return os.path.normpath(os.path.join(os.path.realpath(base), *path.relative_to(base).parts))
 
 
 def _files(folder: Path, pattern: str, store: Path, base: _Folder) -> list[_File]:
     """Regular files in folder that match pattern, reached from the store without a link: a
     symlink is never followed, so it never leads out of the store."""
     found = []
+    if os.path.realpath(folder) != os.path.join(base.path, *folder.relative_to(store).parts):
+        return found
     for path in sorted(folder.glob(pattern)):
         names = path.relative_to(store).parts
         try:
@@ -1075,19 +1110,34 @@ def _slurp(f: _File) -> tuple[bytes, str]:
     before reading: a write after it shows at the next listing."""
     with _open(f) as fh:
         print_ = _file_print(os.fstat(fh.fileno()))
-        return fh.read(), print_
+        return _at_most(fh, _MOST), print_
+
+
+def _at_most(fh: io.BufferedIOBase, most: int) -> bytes:
+    """All of `fh` when it holds no more than `most` bytes."""
+    data = fh.read(most + 1)
+    if len(data) > most:
+        raise Oversized("a store file")
+    return data
 
 
 def _first_line(f: _File) -> str:
     with _open(f) as fh:
         if f.path.suffix != ".zst":
-            return fh.readline().decode()
+            return fh.readline(_MOST).decode()
         with zstandard.ZstdDecompressor().stream_reader(fh, read_across_frames=True) as reader:
-            return io.TextIOWrapper(reader, encoding="utf-8").readline()
+            return io.TextIOWrapper(reader, encoding="utf-8").readline(_MOST)
 
 
 def _unzstd(data: bytes) -> bytes:
-    return zstandard.ZstdDecompressor().stream_reader(io.BytesIO(data), read_across_frames=True).read()
+    with zstandard.ZstdDecompressor().stream_reader(io.BytesIO(data), read_across_frames=True) as reader:
+        return _at_most(reader, _expanded(len(data)))
+
+
+def _expanded(stored: int) -> int:
+    """The most bytes a compressed store file of `stored` bytes may hold. Text compresses to a
+    twentieth or so; only padding compresses a thousandfold."""
+    return min(_MOST, _EXPANDS * stored)
 
 
 def _guarded_content(unit: Unit) -> int:
@@ -1106,13 +1156,15 @@ def _decompressed(f: _File) -> int:
     with _open(f) as fh, zstandard.ZstdDecompressor().stream_reader(fh, read_across_frames=True) as reader:
         while chunk := reader.read(1 << 20):
             size += len(chunk)
+            if size > _expanded(f.st.st_size):
+                raise Oversized("a store file")
     return size
 
 
-def _database(path: Path, root: Path) -> _Db:
+def _database(path: Path, root: Path, added: bool = False) -> _Db:
     """A store database, read only as a regular file reached from its root without a link. Its
     root need not be listable, since Atlas only walks down known names."""
-    folder, names = _folder(root), path.relative_to(root).parts
+    folder, names = _folder(root, added), path.relative_to(root).parts
     if not stat.S_ISREG(path.lstat().st_mode) or os.path.realpath(path) != os.path.join(folder.path, *names):
         raise LinkedElsewhere(path.name)
     return _Db(path, folder, names)
@@ -1135,7 +1187,15 @@ def _transaction(db: _Db, read: Callable[[sqlite3.Connection], T]) -> T:
     names no descriptor. The read counts only when the file SQLite names is the pin's or, under the
     root and by no link, still the pinned file: one swapped in between is never read. SQLite opens
     the WAL and its index by name beside that file, so it reads them only from the checked folder,
-    as `_wal` says."""
+    as `_wal` says.
+
+    A store of one name with no WAL and no rollback journal beside it has no writer, and SQLite
+    would create a WAL and its index beside a WAL-mode one to read it. So it is opened `immutable`,
+    which creates and locks nothing and trusts the file not to change, and the read counts only
+    when the file has not changed and still has neither beside it: a writer that came meanwhile
+    makes the read a transient error, tried again. A file's times move with the system's clock
+    tick, so a writer that opens, checkpoints and closes inside the tick of the store's last write
+    is a stated limit."""
     folder = _inside(db.root, db.names[:-1])
     try:
         pin, held = _pinned(folder, db.names[-1])
@@ -1145,10 +1205,13 @@ def _transaction(db: _Db, read: Callable[[sqlite3.Connection], T]) -> T:
     try:
         own, base = f"{_DESCRIPTORS}/{pin}" if pin is not None else None, db.names[-1]
         name = own if own and _same_file(own, held) else os.path.join(db.root.path, *db.names)
-        _sidecars(folder, base)
-        with closing(sqlite3.connect(Path(name).as_uri() + "?mode=ro", uri=True, timeout=5,
-                                     isolation_level=None)) as con:
+        at_rest = held.st_nlink == 1 and _at_rest(folder, base)
+        if name == own and os.readlink(own).endswith(" (deleted)"):
+            raise SwappedWhileRead(db.path.name)     # SQLite would open that name, whatever now has it
+        with closing(sqlite3.connect(Path(name).as_uri() + ("?mode=ro&immutable=1" if at_rest else "?mode=ro"),
+                                     uri=True, timeout=5, isolation_level=None)) as con:
             con.row_factory = sqlite3.Row
+            con.set_authorizer(_by_name)
             con.execute("BEGIN")
             result = read(con)
             opened = os.fsdecode(con.execute("SELECT CAST(file AS BLOB) FROM pragma_database_list "
@@ -1157,13 +1220,39 @@ def _transaction(db: _Db, read: Callable[[sqlite3.Connection], T]) -> T:
                                        and os.path.realpath(opened) == opened and _same_file(opened, held)):
                 raise SwappedWhileRead(db.path.name)
             sidecars = _sidecars(folder, base)
-            if con.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
+            if at_rest:
+                now = os.fstat(pin) if pin is not None else os.stat(base, dir_fd=folder, follow_symlinks=False)
+                if not _at_rest(folder, base) or _state(now) != _state(held):
+                    raise sqlite3.OperationalError("a store was written while Atlas read it")
+            elif con.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
                 _wal(db.path.name, sidecars, folder)
             return result
     finally:
         if pin is not None:
             os.close(pin)
         os.close(folder)
+
+
+def _at_rest(folder: int, base: str) -> bool:
+    """Whether the database has neither a WAL nor a rollback journal in its checked folder: nothing
+    is writing it, and all of it is in its own file."""
+    journal = True
+    try:
+        os.stat(f"{base}-journal", dir_fd=folder, follow_symlinks=False)
+    except FileNotFoundError:
+        journal = False
+    return not journal and _sidecars(folder, base)[0] is None
+
+
+def _state(st: os.stat_result) -> tuple[int, int, int]:
+    return st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
+def _by_name(action: int, first: str | None, second: str | None, database: str | None, inside: str | None) -> int:
+    """Atlas reads a store's tables by name. What a view or trigger of the store would run
+    (`inside` names it) and any recursive query are refused, so no store's schema chooses how
+    long a read runs."""
+    return sqlite3.SQLITE_DENY if inside is not None or action == sqlite3.SQLITE_RECURSIVE else sqlite3.SQLITE_OK
 
 
 def _pinned(folder: int, name: str) -> tuple[int | None, os.stat_result]:
@@ -1365,7 +1454,7 @@ def _units(data: bytes, width: int) -> bytes:
 
 def _canonical(value: object) -> str:
     text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(text.encode()).hexdigest()
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _jsonable(value: object) -> object:
