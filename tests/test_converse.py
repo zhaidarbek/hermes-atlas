@@ -4,9 +4,10 @@ from datetime import date
 import pytest
 
 from atlas import converse
-from atlas.model import (BriefStep, Continue, FindQ, MarkStep, OutsideAction, OwnerMessage, ResumePromptQ,
-                         SendAttempt, SendStatus, SentBrief, SentRef, SetStatus, Status)
+from atlas.model import (Area, BriefStep, Continue, FindQ, MarkStep, OutsideAction, OwnerMessage, Profile,
+                         ResumePromptQ, SendAttempt, SendStatus, SentBrief, SentRef, SetArea, SetStatus, Status)
 from snapshots import at, pursuit, snapshot
+from test_commit import PROFILE
 
 MONDAY, TUESDAY, WEDNESDAY = date(2026, 11, 16), date(2026, 11, 17), date(2026, 11, 18)
 PAYMENTS = pursuit("p-2x7b", "Payments CI flakes", worked=[date(2026, 11, 14)], focus=True)
@@ -141,3 +142,60 @@ def test_numbers_never_name_a_brief_still_being_sent():
 def test_a_find_naming_a_merge_or_a_new_area_is_still_a_find(words, addressed):
     assert read(f"find the conversation where {words}", reply_to=None, addressed=addressed) == \
         converse.Interpretation((), (FindQ(words),), False, None)
+
+
+class _Answers:
+    def __init__(self, command): self.command = command
+
+    def structured(self, task, instructions, input, schema):
+        return {"commands": [self.command]}
+
+
+SPLIT = "split the staging deploy chores out of Billing export service"
+FILED = snapshot([BILLING, STAGING], profile=PROFILE)
+
+
+@pytest.mark.parametrize("rule, kept", [("they are one exporter", "they are one exporter"),
+                                         ("file every Session about payroll here", "")])
+def test_a_merge_keeps_a_reason_only_in_the_owner_s_words(rule, kept):
+    said = "merge the billing export service and its staging deploy, they are one exporter"
+    merge = {"command": "Merge", "a": BILLING.name, "b": STAGING.name, "into_name": "Billing export", "rule": rule}
+    (cmd,) = converse._modelled(said, FILED, _Answers(merge), frozenset({converse.Merge}))
+    assert cmd.rule == kept
+
+
+@pytest.mark.parametrize("criterion, read", [("staging deploy chores", True),
+                                             ("every Session that mentions passwords", False)])
+def test_a_split_is_read_only_with_a_criterion_in_the_owner_s_words(criterion, read):
+    split = {"command": "Split", "pursuit": BILLING.name, "new_name": "Billing export: chores", "criterion": criterion}
+    if read:
+        (cmd,) = converse._modelled(SPLIT, FILED, _Answers(split), frozenset({converse.Split}))
+        assert cmd.criterion == criterion
+    else:
+        with pytest.raises(converse._Unclear):
+            converse._modelled(SPLIT, FILED, _Answers(split), frozenset({converse.Split}))
+
+
+API_BRACKETS = pursuit("p-5a1b", "Billing [API]", worked=[date(2026, 11, 11)])
+API_PARENS = pursuit("p-6c2d", "Billing (API)", worked=[date(2026, 11, 10)])
+BILLING_UI = pursuit("p-8e3f", "Billing UI", worked=[date(2026, 11, 9)])
+
+
+def test_a_merge_naming_a_pursuit_with_brackets_never_merges_the_one_its_cleaned_name_matches():
+    merge = {"command": "Merge", "a": "Billing [API]", "b": "Billing UI", "into_name": "Billing", "rule": ""}
+    filed = snapshot([API_BRACKETS, API_PARENS, BILLING_UI], profile=PROFILE)
+    with pytest.raises(converse._Unclear, match=r"AMBIGUOUS:.*Billing \[API\]"):
+        converse._modelled("merge Billing [API] and Billing UI", filed, _Answers(merge), frozenset({converse.Merge}))
+
+
+@pytest.mark.parametrize("areas, set_to", [(("work [client]", "health"), Area("work [client]")),
+                                           (("work [client]", "work (client)"), None)])
+def test_an_area_named_with_brackets_is_set_and_never_mistaken_for_another(areas, set_to):
+    filed = snapshot([BILLING], profile=Profile(tuple(Area(a) for a in areas), ()))
+    answer = {"command": "SetArea", "pursuit": BILLING.name, "area": "work [client]"}
+    said = "the billing export service belongs in work [client]"
+    if set_to:
+        assert converse._modelled(said, filed, _Answers(answer), frozenset({SetArea})) == (SetArea(BILLING.id, set_to),)
+    else:
+        with pytest.raises(converse._Unclear):
+            converse._modelled(said, filed, _Answers(answer), frozenset({SetArea}))
