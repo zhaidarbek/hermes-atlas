@@ -7,7 +7,9 @@ second-machine drop), CollectedSession, Pending, Found.
 
 Rules every adapter follows:
 - Open SQLite stores as ``file:<abs>?mode=ro`` with busy_timeout 5 s and 3x50 ms retry on
-  transient disk I/O. Read each store in one short read transaction, and read columns by name.
+  transient disk I/O, and ``immutable`` when no WAL or journal is beside one, so SQLite creates
+  none. Read each store in one short read transaction, read columns by name, and never
+  through a view of the store.
 - Open a store file only as a regular file whose real path is under its store, never through a
   symlink, so no transcript name can lead to a credential file (~/.claude/.credentials.json,
   ~/.codex/auth.json, ~/.t3/userdata/secrets, Hermes .env).
