@@ -49,7 +49,9 @@ def snapshot(pursuits: Sequence[Pursuit] = (), *, pauses: Sequence[Pause] = (), 
         files["profile.md"] = _codec.render("profile", profile, tz)
     for p in pursuits:
         refs = {m.evidence: _codec.SessionRef(harness_of(m.evidence).label, m.evidence, m.at.date()) for m in p.sessions}
-        files[_layout.pursuit_path(p.id, _layout.slug(p.name))] = _codec.render("pursuit", _codec.PursuitFile(p, refs), tz)
+        path = _layout.pursuit_path(p.id, _layout.slug(p.name))   # a taken slug gets the id, as the record does
+        path = _layout.pursuit_path(p.id, f"{_layout.slug(p.name)}-{p.id}") if path in files else path
+        files[path] = _codec.render("pursuit", _codec.PursuitFile(p, refs), tz)
     for b in briefs:
         files[_layout.brief_path(b.day)] = _codec.render("brief", b, tz)
     return Snapshot(Path("/no-record"), Revision(0), {path: _seal.stamp(data) for path, data in files.items()})
