@@ -48,7 +48,7 @@ against the sha256 in ``session.md`` and re-copied from the Harness if it still 
 Forget
 ------
 ``RemoveEvidence`` ops delete the evidence directory, the mirror copies of rewritten files are
-replaced in the same commit, and the commit also deletes index rows and LLM-cache entries
+replaced in the same commit, and the commit also empties the index, deletes the LLM-cache entries
 tagged with the Evidence id, and any staged txn copy. No other place holds raw content: the
 inbox is emptied after import, and Telegram history is outside Atlas (disclosed).
 """
@@ -234,6 +234,16 @@ def _front_matter(path: Path) -> bytes:
             if len(lines) > 1 and line == b"---\n":
                 break
     return b"".join(lines)
+
+
+_SESSION_ID = re.compile(r"[a-z]+-[a-z0-9]+")
+
+
+def _session_files(root: Path, id: EvidenceId) -> list[Path]:
+    """The session.md of the Session with exactly this id. An id reaches a glob, so one that is not
+    letters, a dash, then letters and digits names no Session: no wildcard finds another's."""
+    harness = harness_of(id) if _SESSION_ID.fullmatch(id) else None
+    return sorted((root / "evidence").glob(f"{harness.value}/*/*/{id}/session.md")) if harness else []
 
 
 def _unzstd(data: bytes) -> bytes:
@@ -515,8 +525,7 @@ class Snapshot:
         return sorted(str(p.relative_to(self._root)) for p in (self._root / "evidence").glob("*/*/*/*/session.md"))
 
     def _evidence_folder(self, id: EvidenceId) -> str | None:
-        harness = harness_of(id)
-        found = sorted((self._root / "evidence").glob(f"{harness.value}/*/*/{id}/session.md")) if harness else []
+        found = _session_files(self._root, id)
         return str(found[0].parent.relative_to(self._root)) + "/" if found else None
 
     def _value(self, kind: _layout.FileKind, path: str):
@@ -785,16 +794,19 @@ class ChangeSet:
         parts = {p.name: p for p in before.parts} if before else {}
         turns = list(before.turns) if before else []
         last = [s.last_at, *([before.last_at] if before else [])]
+        keys = {*(before.folded if before else ()), *guard}
         for id, key in folds.items():
             if (moved := self._fold_in(id, key, folder, parts)) is not None:
                 turns = list(_in_order(turns, moved.turns, moved.turns, set()))
                 last.append(moved.last_at)
+                keys |= {*moved.folded}
         for part in s.parts:
             self._take_out(part.origin, folder)
             copy = self._hold(f"{folder}raw/{part.name}", raw[part.name])
             parts[part.name] = replace(part, sha256=hashlib.sha256(copy).hexdigest())
         top = into or replace(s, interface=s.interface or (before.interface if before else None))
-        merged = replace(top, parts=tuple(sorted(parts.values(), key=lambda p: (p.name != MAIN_FILE, p.name))),
+        held = tuple(sorted(parts.values(), key=lambda p: (p.name != MAIN_FILE, p.name)))
+        merged = replace(top, parts=held, folded=_folded(top, held, keys),
                          turns=_in_order(turns, s.turns, _codec.shown(top, s.turns, self._tz()),
                                          {p.name for p in s.parts}),
                          last_at=max(last, key=datetime.timestamp))
@@ -849,8 +861,9 @@ class ChangeSet:
             return
         turns = tuple(t for t in e.turns if part_file(t.part) != name)
         self._write(f"{source}raw/{name}", None)
+        parts = tuple(p for p in e.parts if p.name != name)
         self._write(source + "session.md", _codec.render("session", replace(
-            e, parts=tuple(p for p in e.parts if p.name != name), turns=turns,
+            e, parts=parts, turns=turns, folded=_folded(e, parts, e.folded),
             last_at=max([e.started, *(t.at for t in turns if t.at)])), self._tz()))
 
     def _session_at(self, folder: str) -> SessionEvidence | None:
@@ -892,7 +905,7 @@ class ChangeSet:
         folder as the commit finds it, also one another commit put there after this was planned. A
         link goes as itself: what it points to is never read or deleted, and the commit raises
         Conflict when a link stands where the folder or its mirror is. The commit also deletes the
-        model outputs cached from it, its rows in the index, and the masking pass's staged copies
+        model outputs cached from it, every row of the index, and the masking pass's staged copies
         of the files it writes."""
         self._purges = True
         return self._remove(id)
@@ -1047,6 +1060,14 @@ def _rehomed(s: SessionEvidence, raw: Mapping[str, bytes], key: str) -> tuple[Se
     return (replace(s, parts=tuple(replace(p, name=names[p.name]) for p in s.parts),
                     turns=tuple(replace(t, role="agent", part=_moved(t.part, key, names)) for t in s.turns)),
             {names[name]: data for name, data in raw.items()})
+
+
+def _folded(s: SessionEvidence, parts: Sequence[RawPart], keys: Iterable[str]) -> tuple[str, ...]:
+    """Those of `keys` that are the skip key of a Session folded into `s`: one of `parts` came
+    from it (a part's origin starts with the first 16 hex digits its skip key has) and it is not
+    `s` itself. Kept in session.md because a skip key cannot be worked out from a part's origin."""
+    theirs = {p.origin.split(":", 1)[0] for p in parts if p.origin} - {part_origin(s.harness, s.native_key, "")[:-1]}
+    return tuple(sorted(k for k in keys if k.removeprefix("sha256:")[:16] in theirs))
 
 
 def _in_order(held: Sequence[Turn], read: Sequence[Turn], shown: Sequence[Turn], parts: set[str]) -> tuple[Turn, ...]:
@@ -1240,7 +1261,9 @@ class Record:
             if not files:
                 return Revision(head)
             self._uncache(set(cs._removed))
-            if cs._removed:
+            if cs._purges:
+                _index.empty(_txn.machinery(self.root))
+            elif cs._removed:
                 _index.drop(_txn.machinery(self.root), set(cs._removed))
             files[_layout.HEAD] = f"{head + 1}\n".encode()
             if cs._purges:
@@ -1426,8 +1449,7 @@ class Record:
             return None
 
     def _holds(self, id: EvidenceId) -> bool:
-        harness = harness_of(id)
-        return harness is not None and any((self.root / "evidence").glob(f"{harness.value}/*/*/{id}/session.md"))
+        return bool(_session_files(self.root, id))
 
     def _uncache(self, removed: set[EvidenceId]) -> None:
         """Deletes every cached model output read from one of these Sessions."""

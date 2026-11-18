@@ -356,13 +356,15 @@ def in_flight(snap: Snapshot, now: datetime) -> bool:
 
 def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], asks: Sequence[Query],
              applies: Mapping[EvidenceId, Sequence[Command]] | None = None,
-             prework: Mapping[Command, object] | None = None, answers: Mapping[Query, str] = {}) -> Decision:
+             prework: Mapping[Command, object] | None = None, answers: Mapping[Query, str] = {},
+             drawn: Mapping[Query, Sequence[EvidenceId]] = {}) -> Decision:
     """The owner wrote to Atlas: one ChangeSet holds the Note (W Q14), with Atlas's reply, and
     every change its Commands make under the owner's authority naming that Note. ApplyNote makes
     the changes `applies` read from that Note, naming it, and marks it applied. A redelivered
     message changes nothing and gets the same reply. Answers follow the change lines: a
     ResumePromptQ's from this Snapshot, every other question's from `answers`, written before the
-    commit (ask). An OutsideAction is refused with its own line, and the rest of the message
+    commit (ask). The Note names the Sessions the reply's lines repeat (`drawn` for `answers`, and
+    those of the agent's Note it offers), so a Forget of one removes the reply. An OutsideAction is refused with its own line, and the rest of the message
     still stands. A ResumeQ answer makes the Note about its Pursuit, so a bare "prompt" next
     finds it; the Note changes no Pursuit. The reply ends with one "apply" offer, for the latest
     file Atlas put back or agent change it refused, when any has not been offered yet (W Q15,
@@ -414,7 +416,9 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
                 p = desk.pursuit(change.pursuit)
                 desk.changed[p.id], line = _change(p, change, said[0], note.at)
             lines += [line] if line else []
-    lines += [resume_prompt(snap, q).data if isinstance(q, ResumePromptQ) else answers[q] for q in asks]
+    prompts = {q: resume_prompt(snap, q) for q in asks if isinstance(q, ResumePromptQ)}
+    lines += [prompts[q].data if q in prompts else answers[q] for q in asks]
+    drew = {id for q in asks for id in (prompts[q].drawn_from if q in prompts else drawn.get(q, ()))}
     about = next((q.pursuit for q in asks if isinstance(q, ResumeQ)), None)
     unoffered = [n for n in snap.pending_applies() if not n.offered and n.id not in kept]
     offer = unoffered[-1] if unoffered else None
@@ -443,7 +447,8 @@ def converse(snap: Snapshot, msg: OwnerMessage, commands: Sequence[Command], ask
     if settings is not None and settings != snap.settings():
         cs.put_settings(settings)
     cs.put_notes(kept.values())
-    cs.append_note(replace(note, atlas_reply="\n".join(lines), about=about, offer=offer.id if offer else None))
+    cs.append_note(replace(note, atlas_reply="\n".join(lines), about=about, offer=offer.id if offer else None,
+                           derived_from=tuple(sorted(drew | set(offer.derived_from if offer else ())))))
     return Decision(cs, Outcome(True, tuple(lines)))
 
 
@@ -619,7 +624,7 @@ def resume_prompt(snap: Snapshot, q: ResumePromptQ) -> Answer:
     else:
         step = next(s for s in snap.brief(q.brief).steps if s.n == q.item)
         p = snap.pursuit(step.pursuit)
-    return Answer(None, (), Coverage(), data=messages.resume_prompt(p, snap))
+    return Answer(None, (), Coverage(), data=messages.resume_prompt(p, snap), drawn_from=ask.drawn_from(p))
 
 
 # ------------------------------------------------------------------ clocks (Pause stops all of them)

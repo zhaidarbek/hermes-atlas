@@ -133,7 +133,7 @@ def _wall(naive: datetime, tz: tzinfo | None) -> datetime:
 
 _KEPT: dict[type, frozenset[str]] = {
     RawPart: frozenset({"name", "sha256", "fingerprint", "origin"}),
-    SessionEvidence: frozenset({"namespace", "native_key"}),
+    SessionEvidence: frozenset({"namespace", "native_key", "folded"}),
     Turn: frozenset({"part"}),
     SendAttempt: frozenset({"message_ids", "text_sha256"}),
     Note: frozenset({"platform_ref"}),
@@ -1399,7 +1399,8 @@ def _render_session(e: SessionEvidence, tz: tzinfo | None) -> str:
              f"cwd: {_scalar(e.cwd)}", f"git_branch: {_scalar(e.git_branch)}",
              f"started: {start.isoformat(timespec='seconds')}",
              f"last_at: {local(e.last_at, tz).isoformat(timespec='seconds')}", "parts:" + ("" if parts else " []"),
-             *parts, "regenerated_from_raw: true"]
+             *parts, *(["folded:", *(f"  - {k}" for k in sorted(e.folded))] if e.folded else []),
+             "regenerated_from_raw: true"]
     head = f"# {_label(e)} · {_short_day(start.date())} {start:%H:%M}" + (f" · {e.cwd}" if e.cwd else "")
     blocks, day = [], start.date()
     for t in e.turns:
@@ -1441,7 +1442,7 @@ def _parse_session(text: str, tz: tzinfo | None) -> SessionEvidence:
         machine=f["machine"], cwd=f["cwd"], git_branch=f["git_branch"],
         parts=tuple(RawPart(str(p["name"]), p["sha256"], p["source"], p["fingerprint"], str(p.get("origin") or ""))
                     for p in f["parts"] or ()),
-        turns=tuple(turns))
+        turns=tuple(turns), folded=tuple(map(str, f.get("folded") or ())))
 
 
 # ------------------------------------------------------------------ evidence/<id>/card.md

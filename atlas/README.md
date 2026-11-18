@@ -275,7 +275,7 @@ Everything Atlas keeps is in one folder, `~/atlas` by default, as plain files yo
 
 ### Forget
 
-Forget removes a Session for good: its raw copy, transcript and summary card, the cached model answers that read it, its rows in the search index, every Pursuit line, Step, History line, Journal line and Profile entry that cites it, and a Pursuit made from that Session alone. Atlas keeps the time of the Forget and a hash of the Session's id in `forgotten.md`, so it never collects that Session again. Forget does not remove the Session from the Harness's own store, which Atlas never writes: delete it there if a secret must go. It does not change a Daily Brief already sent, and Telegram keeps what was delivered.
+Forget removes a Session for good: its raw copy, transcript and summary card, the cached model answers that read it, the search index (Atlas builds it again from what is left), every Pursuit line, Step, History line, Journal line and Profile entry that cites it, and a Pursuit made from that Session alone. Where an answer Atlas gave you in `notes/` repeats one of those lines, Atlas replaces the answer with a line saying it is gone; your own words stay. Atlas keeps the time of the Forget and a hash of the Session's id, and of each subagent conversation folded into it, in `forgotten.md`, so it never collects them again. Forget does not remove the Session from the Harness's own store, which Atlas never writes: delete it there if a secret must go. It does not change a Daily Brief already sent, and Telegram keeps what was delivered.
 
 ## The Board tab
 
@@ -423,7 +423,7 @@ The change comes from your message: it adds that message as one Decided line, an
 
 **Serves an API in the Hermes dashboard**
 
-While the plugin is enabled, `hermes dashboard` serves Atlas's routes under `/api/plugins/atlas/` (`atlas/dashboard/plugin_api.py`). They read the Board, the settings and the masked transcript of any Session, and change a Pursuit's Status and Focus and Atlas's settings. Hermes's own dashboard sign-in guards them, as it guards Hermes's other routes; Atlas adds no check of its own. They listen wherever the dashboard listens: 127.0.0.1 by default.
+While the plugin is enabled, `hermes dashboard` serves Atlas's routes under `/api/plugins/atlas/` (`atlas/dashboard/plugin_api.py`). They read the Board, the settings and the masked transcript of any Session, and change a Pursuit's Status and Focus and Atlas's settings. Hermes's own dashboard sign-in guards them, as it guards Hermes's other routes; Atlas adds no check of its own. They listen wherever the dashboard listens: 127.0.0.1 by default. A known limit: on 127.0.0.1 Hermes gives the dashboard's session token to any program on the machine that asks for the page, so another person logged in to the same machine can read your masked transcripts and change Atlas's settings, such as the chat the Daily Brief goes to and the folders Atlas reads. Do not run the dashboard on a machine other people can log in to.
 
 **Runs commands**
 

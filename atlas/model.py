@@ -326,6 +326,7 @@ class SessionEvidence:
     git_branch: str | None
     parts: tuple[RawPart, ...]
     turns: tuple[Turn, ...]                 # loaded lazily by Snapshot.session(); folded parts contribute agent turns only
+    folded: tuple[str, ...] = ()            # skip_key() of each Session folded into it, so Forget keeps them out too
 
 
 class NoteOrigin(str, Enum):
@@ -350,7 +351,8 @@ class Note:
     offered: bool = False                   # HAND_EDIT / REFUSED_UPDATE: "apply" already offered in an answer
     derived_from: tuple[EvidenceId, ...] = ()  # HAND_EDIT: Evidence the edited file or Atlas's last-written copy
                                                # cites; AGENT / REFUSED_UPDATE: the calling Session. Forget of
-                                               # one of them removes the Note too
+                                               # one of them removes the Note too. OWNER: Evidence whose lines
+                                               # Atlas's reply repeats; Forget of one of them removes the reply
     platform_ref: str | None = None         # inbound platform message id: a redelivered message is one Note
     cwd: str | None = None                  # AGENT / REFUSED_UPDATE: the calling Harness's folder, in the Notes file
     applied: bool = False                   # HAND_EDIT / REFUSED_UPDATE: "apply" made the change
@@ -816,6 +818,7 @@ class Answer:
     statements: tuple[Statement, ...]
     coverage: Coverage
     data: object | None = None              # BoardView, DayTime table, prompt text ... typed per Query
+    drawn_from: tuple[EvidenceId, ...] = ()  # the Sessions and Notes whose lines the text repeats
 
 
 @dataclass(frozen=True)
