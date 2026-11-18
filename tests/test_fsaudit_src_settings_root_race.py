@@ -17,11 +17,11 @@ def test_an_added_folder_whose_parent_becomes_a_link_after_the_link_check_is_not
     rec = record(tmp_path, CX, roots=[shared / "codex"])
     real = _adapters._within
 
-    def swapped_after_the_check(folder):             # runs after roots() found the root unlinked
+    def swapped_after_the_check(folder, *rest):      # runs after roots() found the root unlinked
         if not shared.is_symlink():
             shutil.move(shared, tmp_path / "kept")
             shared.symlink_to(elsewhere)
-        return real(folder)
+        return real(folder, *rest)
 
     monkeypatch.setattr(_adapters, "_within", swapped_after_the_check)
     Atlas(rec, None).backfill(NOW)
