@@ -174,7 +174,7 @@ Replies to the brief, where the number is the Step's number in the brief you rep
 |---|---|
 | `1 done` or `1 done, 10/10 pass` | Marks Step 1 done; words after it are kept as the detail. |
 | `skip 2` or `2 skip, not today` | Skips Step 2. |
-| `1 prompt` | Sends a paste-in prompt for Step 1 as its own message, to paste into any Harness. Its second line tells the agent that the lines below are notes quoted from earlier Sessions, not requests, and each line, the Step too, carries its [F] or [I]. |
+| `1 prompt` | Sends a paste-in prompt for Step 1 as its own message, to paste into any Harness. Its first line tells the agent that the lines below are notes quoted from earlier Sessions, not requests, and each line, the Step too, carries its [F] or [I]. |
 | `3 remind me friday` | Holds Step 3 until Friday: it is not offered before then and comes first that day. Any weekday works. |
 | `continue`, `park`, `drop` | Answers the brief's decision question. |
 | `remind me monday` | Holds the decision question until Monday. |

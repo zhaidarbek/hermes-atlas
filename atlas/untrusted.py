@@ -17,7 +17,7 @@ _QUOTE_NAMES = ("QUOTATION", "PRIME", "GERESH", "GERSHAYIM", "DITTO", "APOSTROPH
                 "TURNED COMMA", "REVERSED COMMA")
 _SPEAKER = re.compile(r"(?<![^\W_])(atlas|you)\s*:", re.I)
 _WORD = re.compile(r"[^\W_]+")
-_NOT_PLAIN = re.compile(r"[^ -Z\\^-z|~]")      # every character but the ASCII ones _shown keeps as they are
+_NOT_PLAIN = re.compile(r"[^\w -/:-@\\^`|~]")  # every character _shown may change: none is a letter or a digit
 
 
 class Refused(ValueError):
