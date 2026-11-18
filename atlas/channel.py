@@ -112,7 +112,7 @@ class Telegram:
     settings: Settings
 
     def send(self, text: str, kind: telegram.Kind) -> Delivered:
-        """subprocess: hermes send --to <settings.channel.target> --json <text, styled for its kind>.
+        """subprocess: hermes send --to <settings.channel.target> --json -- <text, styled for its kind>.
         exit 0 -> the chat and message ids (SENT); exit 1 after the platform may have accepted it, or
         a timeout -> ArrivalUnknown (retried once the same day, D Q13); exit 2 (usage) -> SendRefused."""
         return send(self.settings.channel, text, kind)
@@ -131,8 +131,11 @@ class Telegram:
 
 def send(setting: ChannelSetting, text: str, kind: telegram.Kind) -> Delivered:
     """Telegram.send for a Channel setting alone, as the gateway sends a late answer (D Q8)."""
+    # exec refuses half an emoji (a title cut by JavaScript) and a NUL, so both go before styling: a NUL
+    # dropped after it would join `MEDIA\0:` into a tag styling never saw. `--` keeps a leading `-` text
+    clean = text.replace("\0", "").encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
     try:
-        done = _hermes.run("send", "--to", setting.target, "--json", shown(setting.platform, text, kind))
+        done = _hermes.run("send", "--to", setting.target, "--json", "--", shown(setting.platform, clean, kind))
     except subprocess.TimeoutExpired as late:
         raise ArrivalUnknown("hermes send timed out") from late
     except OSError as refused:

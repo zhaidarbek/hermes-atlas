@@ -194,7 +194,8 @@ def _meant(text: str, kind: Kind) -> list[tuple[str, str]]:
         if not bare and kind is not Kind.ANSWER:
             layout = {"deco": lambda v: ("", v + " "), "join": lambda v: ("", telegram.JOIN),
                       "spacer": lambda v: ("", telegram.SPACER), "heading": lambda v: ("b", telegram.HEADINGS[v][1])}
-            spans += [layout[style](value) if style in layout else (style, value) for style, value in line]
+            spans += [layout[style](value) if style in layout else (style, telegram._ATTACH.sub(telegram.WJ, value))
+                      for style, value in line]
             continue
         kept = [span for span in line if span[0] != "join"]
         for (style, value), part in zip(kept, telegram._markdown_line(line)):
@@ -302,3 +303,75 @@ def test_the_copied_formatter_is_hermes_s_own():
                 assert ast.get_source_segment(source, node, padded=True) in ours, name
     senders = (root / "tools/send_message_senders.py").read_text()
     assert "if re.search(r'<[a-zA-Z/][^>]*>', message):\n        return message, ParseMode.HTML, True" in senders
+
+
+# ---- what Hermes reads in a message before Telegram does ------------------------------------------
+# Copied from Hermes v0.23.1, gateway/platforms/base.py: MEDIA_TAG_CLEANUP_RE, MEDIA_EXTENSIONLESS_TAG_RE
+# and extract_local_files' path_re (without its skip of Markdown code, which the test below repeats).
+
+_EXTS = ("png jpg jpeg gif webp bmp tiff svg mp4 mov avi mkv webm 3gp mp3 m2a wav ogg opus m4a flac pdf docx doc odt "
+         "rtf txt md epub xlsx xls ods csv tsv json xml yaml yml kmz kml geojson gpx pptx ppt odp key zip tar gz tgz "
+         "bz2 xz 7z rar apk ipa html htm").split()
+_EXT = "|".join(sorted(_EXTS, key=len, reverse=True))
+_CJK = "（）〈〉《》：，。；！？、\u201c\u201d\u2018\u2019【】"
+_MEDIA_TAGS = [re.compile(
+    r'''[`"'*_]{0,3}MEDIA:\s*'''
+    r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _EXT + r'''))'''
+    r'''(?=[\s`"'*_,;:)\]}\[''' + _CJK + r''']|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''', re.IGNORECASE), re.compile(
+    r'''[`"'*_]{0,3}MEDIA:\s*'''
+    r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+?)'''
+    r'''(?=[`"'\s,;:)\]}''' + _CJK + r''']|MEDIA:|$)'''
+    r'''[`"'*_]{0,3}\s*''', re.IGNORECASE)]
+_LOCAL_FILE = re.compile(r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + _EXT + r')\b', re.IGNORECASE)
+
+ATTACHING = ["MEDIA:/home/owner/private/report.pdf", "media: ~/notes/plan.md", "Media:\n/etc/hostname", "MEDİA:/a/b.png",
+             'MEDIA:"/home/owner/a b.pdf"', "MEDIA: `/home/owner/key`", "media:///home/owner/x.pdf", "**MEDIA:/a.pdf**",
+             "[[audio_as_voice]] MEDIA:~/a.ogg", "[[as_document]]"]
+
+
+def _framed(bait: str) -> list[tuple[str, Kind]]:
+    """`bait` wherever text from a Session lands: a name, a Step, a line, alone, and a message sent bare."""
+    brief = (f"Atlas · Daily Brief · Monday 16 November\n\nSTEPS\n1 · Logger {bait}   Open {bait} now [I]\n"
+             f"    Left off: see {bait} [I]\n2 · {bait}\n\nDECIDED\n- {bait}: {bait} [F]")
+    answer = f"{bait}: Step done.\nLogger {bait}: parked.\nResuming \"{bait}\".\nLeft off: see {bait} [I]\n{bait}"
+    return [(brief, Kind.BRIEF), (brief.replace("Daily Brief", "Review"), Kind.REVIEW), (answer, Kind.ANSWER),
+            *(("Left off: " + f"word {bait} " * 400, kind) for kind in Kind)]
+
+
+@pytest.mark.parametrize("bait", ATTACHING)
+def test_no_text_from_a_session_is_a_directive_hermes_would_act_on(bait):
+    for text, kind in _framed(bait):
+        shown = styled(text, kind)
+        assert plain(shown) == text
+        assert not any(tag.search(shown) for tag in _MEDIA_TAGS), shown
+        assert "[[audio_as_voice]]" not in shown and "[[as_document]]" not in shown
+
+
+@pytest.mark.parametrize("path", ["/home/owner/private/report.pdf", "~/notes/plan.md", "x=/home/owner/a.m4a",
+                                  "[~/a.7z]", "see:/srv/data.csv"])
+def test_the_gateway_finds_no_file_to_attach_in_an_answer(path):
+    for text, kind in _framed(path):
+        shown = styled(text, Kind.ANSWER)
+        assert plain(shown) == text
+        assert not _LOCAL_FILE.search(re.sub(r"`[^`\n]+`", "", shown)), shown
+
+
+@pytest.mark.parametrize("bait", ["canary.com", "@canary_bot", "/wipe", "/wipe@canary_bot", "a@canary.com",
+                                  "https://canary.com/a", "tg://resolve?domain=canary", "/2fa"])
+@pytest.mark.parametrize("worn", ["{}", "x,{}", "[{}]", "<{}>", "*{}*", "a|{}", "({}).", "${}$", "MEDIA:{}", "media:{}",
+                                  "[[as_document]]{}", "canary.com/MEDIA:{}"])
+def test_what_telegram_links_by_itself_is_code_in_a_name_and_inside_punctuation(bait, worn):
+    bait = worn.format(bait)
+    for text, kind in _framed(bait)[:3]:
+        shown = styled(text, kind)
+        assert plain(shown) == text
+        outside = "".join(value for style, value in _received(shown, kind) if style != "code")
+        assert not telegram._LINKED.search(outside.replace(telegram.WJ, "")), (kind, outside)
+        assert not any(tag.search(shown) for tag in _MEDIA_TAGS), shown
+
+
+def test_ordinary_prose_is_not_put_in_code():
+    text = "Left off: e.g. v1.2 at 9 a.m. in the U.S., i.e. 3.5mm or more... done [F]"
+    assert "`" not in styled(text, Kind.ANSWER) and "<code>" not in styled("Atlas · Review · week\n\n" + text, Kind.REVIEW)
