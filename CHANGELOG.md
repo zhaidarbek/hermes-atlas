@@ -22,7 +22,7 @@ Security fixes from the November 2026 audit:
 - Fixed: a title cut in the middle of an emoji, or holding a NUL character, no longer stops the Daily Brief from being sent.
 - Fixed: reading a Hermes, Devin or T3 Code store that no Harness has open no longer leaves `-wal` and `-shm` files beside it.
 - Fixed: a Session with a line cut inside an emoji is collected, one such Devin message no longer keeps every Devin Session out, and the Session's transcript opens in the Board.
-- Fixed: a transcript file over 1 GiB, or a compressed one that expands to more than 1,000 times its size, is skipped and no longer read into memory.
+- Fixed: a transcript file over 1 GiB, or a compressed one that expands to more than 1,000 times its size, is skipped and no longer read into memory. A readable copy of the same Session in another folder is collected instead.
 - Fixed: a store database whose table is a view, or that needs a recursive query, is refused and can no longer keep a tick running.
 - Fixed: a store database deleted while Atlas opens it is refused, so a tick no longer waits on a file left under its name.
 - Fixed: a `subagents` folder that is a link is no longer listed, and a folder added in Settings is refused when a link is put in its path after Atlas checked it.
@@ -35,7 +35,7 @@ Security fixes from the November 2026 audit:
 - Fixed: only setup creates the record folder, and it is mode 0700 from the moment it is made; the Board, a tick or a reindex before setup no longer create it with a looser mode.
 - Fixed: setup now refuses a record folder on a network mount when the path is a link to one, when the share is mounted on demand, or when the mount point has a space or a non-ASCII name.
 - Fixed: a Session part with a very long file name no longer leaves a commit that can never finish and blocks every later one.
-- Fixed: Atlas no longer opens a record whose `.atlas` is a link, and setup no longer writes its state through one.
+- Fixed: Atlas no longer opens a record whose `.atlas` is a link, and neither setup nor a tick writes its state or locks through one.
 - Fixed: after you forgot a Session that a Devin subagent conversation had been folded into through T3 Code, Atlas could collect that conversation again as a Session of its own. Atlas now keeps each folded conversation's key and never collects it again.
 - Fixed: Forget left a forgotten Session's lines in the answers Atlas had given you, kept in `notes/`. Forget now replaces such an answer with a line saying it is gone; your own words stay.
 - Fixed: after a Forget, the search index still held lines of the forgotten Session in the rows of other Sessions of the same Pursuit. Forget now empties the index, and Atlas builds it again from what is left.
