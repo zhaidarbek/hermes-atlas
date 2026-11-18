@@ -29,7 +29,7 @@ A few words Atlas uses:
 
 ## Requirements and install
 
-- Hermes v0.23.0 or later, on Linux, with Python 3.11 or later.
+- Hermes v0.23.0 or later, on Linux, with Python 3.11 to 3.14.
 - A Telegram bot paired in Hermes, and a Telegram home channel: send `/sethome` to your bot in the chat where you want the brief.
 - The Hermes gateway running. It runs Hermes's cron jobs, which run Atlas's tick, and it hands Atlas your Telegram replies.
 - For the Board and Settings tabs, the Hermes dashboard (`hermes dashboard`).
@@ -49,7 +49,15 @@ To install from the repository instead of the catalog, name the folder that hold
 hermes plugins install zhaidarbek/hermes-atlas#atlas --enable
 ```
 
-To check a copy before you install it, run `hermes plugins validate /path/to/hermes-atlas/atlas --install-deps`. The command takes the plugin's folder, not its name.
+An install from the repository is not a copy the catalog reviewed, so Hermes's install scanner shows what it found and asks `Install anyway?`. Without a terminal it does not ask: it stops, and the install goes through only with `--force`. For Atlas the scanner reports a caution. Its findings include:
+
+- `proc_access`, where Atlas reads its own process's entries under `/proc` to check which file SQLite opened, and where this guide says so;
+- `execution`, for the two places Atlas starts a program: the `hermes` command, to send a message and to schedule the tick (`atlas/_hermes.py`), and `mount`, to check that the record is on a local disk (`atlas/record/_txn.py`);
+- `destructive`, for the command in step 5 of [Uninstall](#uninstall) that deletes the record folder. You run it, if you choose to; Atlas never does.
+
+The report may hold lower findings as well. Each one names its file and line, so you can read the code before you answer. [Privacy](#privacy-what-atlas-does-on-your-machine) lists everything Atlas reads, writes and sends.
+
+To check a copy before you install it, run `hermes plugins validate /path/to/hermes-atlas/atlas`. The command takes the plugin's folder, not its name. With `--install-deps` it first installs Atlas's three dependencies into Hermes's Python environment, without asking, so that its load check can import them.
 
 ## First run
 
@@ -74,7 +82,7 @@ Exclusions    none named
 Machines      this one only. Sessions on your other machines are not collected.
 ```
 
-It then prints the commands that give your agents Atlas's tools (`claude mcp add atlas -- hermes atlas mcp` and `codex mcp add atlas -- hermes atlas mcp`, for the Harnesses it found), and a list headed "What Atlas does on this machine": the folders it reads and never writes, the folder it writes, the cron job, and what it does with a file you edit by hand.
+It then prints the commands that give your agents Atlas's tools (`claude mcp add atlas -- hermes atlas mcp` and `codex mcp add atlas -- hermes atlas mcp`, for the Harnesses it found), and a list headed "What Atlas does on this machine": the folders it reads and never writes, the folder and the script it writes, the cron job, and what it does with a file you edit by hand.
 
 Setup creates:
 
@@ -454,11 +462,15 @@ Atlas keeps each model answer in `.atlas/cache` in the record, so the same input
 
 ## Uninstall
 
+Do steps 1 and 2 before step 3. The cron job belongs to Hermes, not to the plugin, so removing the plugin leaves it in place.
+
 1. Remove the cron job: run `hermes cron list`, then `hermes cron remove <id>` with the id it shows for `atlas-tick`.
 2. Delete the tick script: `rm "${HERMES_HOME:-$HOME/.hermes}/scripts/atlas_tick.sh"`.
 3. Disable and remove the plugin: `hermes plugins disable atlas`, then `hermes plugins remove atlas`.
 4. If you added the MCP server: `claude mcp remove atlas` and `codex mcp remove atlas`.
 5. The record folder stays until you delete it: `rm -rf ~/atlas` (or your `record_dir`). It holds copies of your conversations, so delete it if you no longer want them.
+
+If you removed the plugin first, the `atlas-tick` job and its script are still there, and every 10 minutes the job fails with `'atlas' is not a hermes command`. Steps 1 and 2 work without the plugin, so do them now.
 
 ## How it was tested
 

@@ -10,7 +10,7 @@ plugin.yaml (manifest_version 2), tested equal to the file:
   license: MIT
   homepage: https://github.com/zhaidarbek/hermes-atlas
   requires_hermes: ">=0.23.0"
-  python_dependencies: ["zstandard>=0.22,<1", "mcp>=2.0,<3", "pyyaml>=6.0,<7"]   # == pyproject (tested)
+  python_dependencies: ["zstandard>=0.24,<1", "mcp>=2.2,<3", "pyyaml>=6.0.3,<7"]   # == pyproject (tested)
   provides_tools: [atlas_read, atlas_note, atlas_update]            # == what register() registers (tested)
   provides_hooks: [pre_gateway_dispatch, post_gateway_admission]   # == what register() registers (tested)
   provides_middleware: []
