@@ -1146,9 +1146,15 @@ def _guarded_content(unit: Unit) -> int:
     if not isinstance(unit.ref, dict):
         return unit.size
     try:
-        return sum(_decompressed(f) if f.path.suffix == ".zst" else f.st.st_size for f in unit.ref.values())
+        return sum(_decompressed(f) if f.path.suffix == ".zst" else _stored(f) for f in unit.ref.values())
     except Exception:
         return -1
+
+
+def _stored(f: _File) -> int:
+    if f.st.st_size > _MOST:
+        raise Oversized("a store file")
+    return f.st.st_size
 
 
 def _decompressed(f: _File) -> int:
