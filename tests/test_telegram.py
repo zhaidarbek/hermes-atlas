@@ -359,8 +359,9 @@ def test_the_gateway_finds_no_file_to_attach_in_an_answer(path):
 
 
 @pytest.mark.parametrize("bait", ["canary.com", "@canary_bot", "/wipe", "/wipe@canary_bot", "a@canary.com",
-                                  "https://canary.com/a", "tg://resolve?domain=canary"])
-@pytest.mark.parametrize("worn", ["{}", "x,{}", "[{}]", "<{}>", "*{}*", "a|{}", "({}).", "${}$"])
+                                  "https://canary.com/a", "tg://resolve?domain=canary", "/2fa"])
+@pytest.mark.parametrize("worn", ["{}", "x,{}", "[{}]", "<{}>", "*{}*", "a|{}", "({}).", "${}$", "MEDIA:{}", "media:{}",
+                                  "[[as_document]]{}", "canary.com/MEDIA:{}"])
 def test_what_telegram_links_by_itself_is_code_in_a_name_and_inside_punctuation(bait, worn):
     bait = worn.format(bait)
     for text, kind in _framed(bait)[:3]:
@@ -368,6 +369,7 @@ def test_what_telegram_links_by_itself_is_code_in_a_name_and_inside_punctuation(
         assert plain(shown) == text
         outside = "".join(value for style, value in _received(shown, kind) if style != "code")
         assert not telegram._LINKED.search(outside.replace(telegram.WJ, "")), (kind, outside)
+        assert not any(tag.search(shown) for tag in _MEDIA_TAGS), shown
 
 
 def test_ordinary_prose_is_not_put_in_code():

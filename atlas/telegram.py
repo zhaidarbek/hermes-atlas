@@ -100,7 +100,7 @@ _PATH = re.compile(r"[\w.~-]*/[\w./~-]*")
 _FILE = re.compile(r"[\w-]+\.(?:py|js|ts|md|txt|json|ya?ml|toml|csv|pdf|sh|go|rs|sql|log|ini|cfg|lock|html|css|gpx)")
 _HOST = re.compile(r"[\w.-]+")
 _CODABLE = re.compile(r"[^\s*`\u2060∗ˋ\\<>|$]+")
-_LINKED = re.compile(r"@\w|[^\W_]\.[^\W\d_]{2,}|://|(?<![\w/])/[A-Za-z]")
+_LINKED = re.compile(r"@\w|[^\W_]\.[^\W\d_]{2,}|://|(?<![\w/])/\w")
 """What Telegram links with no markup: a mention or an address with an @, a domain, a URL, a command.
 The last also finds a path that begins a word, which the gateway would attach (see _FILE_ROOT)."""
 _FILE_ROOT = re.compile(r"(?<![/:\w.])/(?=[\w.-])")
@@ -219,15 +219,24 @@ def _coded(text: str, links_only: bool = False) -> Line:
         after = words[n + 1][0] if n + 1 < len(words) else ""
         found = [(lead, token)]
         if links_only or not _coded_token(token, words[n - 1][0] if n else "", word, after):
-            runs = [(r.start(), *_trimmed(r[0])) for r in _CODABLE.finditer(word)]
-            found = [(begins + lead, run) for begins, lead, run in runs
-                     if _LINKED.search(run) and not _ATTACH.search(run)]
+            found = [(begins + lead, run) for begins, lead, run in _runs(word) if _LINKED.search(run)]
         for lead, token in found:
             start = m.start() + lead
             spans += [("", text[at:start]), ("code", token)]
             at = start + len(token)
     spans.append(("", text[at:]))
     return spans
+
+
+def _runs(word: str) -> list[tuple[int, int, str]]:
+    """The stretches of a word that code can hold, each trimmed, with where it begins. The character
+    after an _ATTACH point stays out of code, so no code reads `MEDIA:`."""
+    out = []
+    for run in _CODABLE.finditer(word):
+        cuts = [cut.start() for cut in _ATTACH.finditer(run[0])]
+        edges = zip([0, *(c + 1 for c in cuts)], [*cuts, len(run[0])])
+        out += [(run.start() + a, *_trimmed(run[0][a:b])) for a, b in edges]
+    return out
 
 
 def _trimmed(word: str) -> tuple[int, str]:
