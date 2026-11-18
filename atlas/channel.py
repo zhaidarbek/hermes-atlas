@@ -131,10 +131,11 @@ class Telegram:
 
 def send(setting: ChannelSetting, text: str, kind: telegram.Kind) -> Delivered:
     """Telegram.send for a Channel setting alone, as the gateway sends a late answer (D Q8)."""
-    # exec refuses half an emoji (a title cut by JavaScript) and a NUL; `--` keeps a leading `-` text
-    message = shown(setting.platform, text, kind).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    # exec refuses half an emoji (a title cut by JavaScript) and a NUL, so both go before styling: a NUL
+    # dropped after it would join `MEDIA\0:` into a tag styling never saw. `--` keeps a leading `-` text
+    clean = text.replace("\0", "").encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
     try:
-        done = _hermes.run("send", "--to", setting.target, "--json", "--", message.replace("\0", ""))
+        done = _hermes.run("send", "--to", setting.target, "--json", "--", shown(setting.platform, clean, kind))
     except subprocess.TimeoutExpired as late:
         raise ArrivalUnknown("hermes send timed out") from late
     except OSError as refused:
