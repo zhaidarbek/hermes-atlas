@@ -1,7 +1,7 @@
 """PRIVATE to atlas.record. Masks the record files an older Atlas wrote with bare secrets (D Q4).
 
-Until ``.atlas/masked`` exists, each open writes those files again through the codec, under the
-write lock, for about SECONDS with every sync counted, at least one step. A step is a file the pass
+Until ``.atlas/masked`` holds the number of the masking rules in use (``privacy.RULES``), each open
+writes those files again through the codec, under the write lock, for about SECONDS with every sync counted, at least one step. A step is a file the pass
 reads or a folder it lists to reach them, in path order from where the open before it stopped. The
 files whose names and Areas other files match, the top files and Pursuits, come first and are staged
 across opens in ``.atlas/masking/``, then written in one transaction, so names and Areas change
@@ -12,7 +12,8 @@ the bytes the pass read, so an edit saved meanwhile is kept, and a commit drops 
 the files it writes, a Forget before it is staged. The pass follows a link in place of a folder above
 a Session folder, never one where a Session folder, its mirror, a folder in them or a file in them
 is: it leaves those files and keeps them in the state, and once it has walked the record each open
-reads only them, until no link stands in their way. Then it walks the record again.
+reads only them, until no link stands in their way. Then it walks the record again. A note or a state
+written under other rules counts for nothing, so a record is masked again by rules it was not.
 """
 from __future__ import annotations
 
@@ -29,12 +30,14 @@ from datetime import tzinfo
 from pathlib import Path
 from typing import Callable, Collection, Iterator
 
+from .. import privacy
 from ..model import HarnessId
 from . import _codec, _layout, _seal, _txn
 
 DONE = "masked"
 UNDER_WAY = "masking"
 STATE = "state"
+RULES = str(privacy.RULES)
 KINDS = frozenset(_codec.CODECS) - {"settings", "readme"}
 ALONE = ("briefs", "evidence", "notes")
 SHAPES = {"pursuits": (), "briefs": (r"\d{4}", r"\d{2}"),
@@ -55,7 +58,7 @@ def run(root: Path, head: Callable[[], int], zone_of: Callable[[bytes], tzinfo |
     folder = machinery / UNDER_WAY
     started = time.monotonic()
     try:
-        if (machinery / DONE).exists():
+        if _bytes(machinery / DONE) == RULES.encode():
             return
         settings = _bytes(root / _layout.TOP_FILES["settings"])
         zone = None if settings is None else zone_of(settings)
@@ -87,7 +90,7 @@ def run(root: Path, head: Callable[[], int], zone_of: Callable[[bytes], tzinfo |
             break
         if waiting == []:
             shutil.rmtree(folder, ignore_errors=True)
-            _txn.write_note(machinery / DONE)
+            _txn.write_note(machinery / DONE, RULES.encode())
         else:
             if _alone(after):
                 masked += _flush(root, folder, batch, head)
@@ -287,7 +290,7 @@ def _state(folder: Path) -> tuple[str | None, list[dict], list[str] | None, list
     state = json.loads((folder / STATE).read_bytes())
     after, batch, waiting, linked = state["after"], state["batch"], state["waiting"], state["linked"]
     staged = [entry["staged"] for entry in batch]
-    if (state["check"] != _check(after, batch, waiting, linked)
+    if (state["rules"] != RULES or state["check"] != _check(after, batch, waiting, linked)
             or not (after is None or _layout.kind_of(after) in KINDS or after.endswith("/"))
             or not all(_layout.kind_of(path) in KINDS for path in [*(waiting or []), *linked])
             or not all(isinstance(name, str) and (folder / name).is_file() for name in staged)):
@@ -309,7 +312,7 @@ def _load(folder: Path) -> tuple[str | None, list[dict], list[str] | None, list[
 
 def _save(folder: Path, after: str | None, batch: list[dict], waiting: list[str] | None, linked: list[str]) -> None:
     folder.mkdir(exist_ok=True)
-    state = {"after": after, "batch": batch, "waiting": waiting, "linked": linked,
+    state = {"rules": RULES, "after": after, "batch": batch, "waiting": waiting, "linked": linked,
              "check": _check(after, batch, waiting, linked)}
     _txn.write_note(folder / STATE, json.dumps(state).encode())
 

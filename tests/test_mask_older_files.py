@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 import atlas.record as record_module
+import scrub_before_75
+from atlas import privacy
 from atlas.app import Atlas
 from atlas.channel import Delivered
 from atlas.telegram import styled
@@ -122,6 +124,36 @@ def test_a_second_open_writes_nothing(tmp_path, throwaway_home, monkeypatch):
     (root / NOTE).unlink()
     Record.open(root)
     assert {p: s for p, s in stat(root).items() if p != NOTE} == {p: s for p, s in masked.items() if p != NOTE}
+
+
+def test_a_record_masked_by_older_rules_is_masked_again_by_the_rules_in_use(tmp_path, throwaway_home, monkeypatch):
+    claude(throwaway_home, "shelves", "plan the shelves", "then run PGPASSWORD=hunter3! psql")
+    rec = record(tmp_path, CC)
+    with monkeypatch.context() as older_rules:
+        older_rules.setattr(privacy, "scrub", scrub_before_75.scrub)
+        Atlas(rec, None).tick(NOW)
+    root = rec.root
+    (root / NOTE).write_bytes(b"")                             # the note of an Atlas before the rules had a number
+    assert any(path.endswith("session.md") for path in holding(root, "hunter3!"))
+
+    Record.open(root)
+
+    assert holding(root, "hunter3!") == set()
+    assert (root / NOTE).read_bytes() == _masking.RULES.encode()
+
+
+def test_a_pass_begun_under_older_rules_starts_over(tmp_path, throwaway_home, monkeypatch, caplog):
+    root = a_masking_pass_cut_short(tmp_path, throwaway_home, monkeypatch)
+    monkeypatch.setattr(_masking, "RULES", "next")
+
+    with caplog.at_level(logging.WARNING, logger="atlas.record"):
+        Record.open(root)
+    assert "starts masking the files an older version wrote over" in caplog.text
+
+    for _ in range(60):
+        Record.open(root)
+    assert holding(root, SECRET) == set()
+    assert (root / NOTE).read_bytes() == b"next"
 
 
 def test_a_hand_edited_file_and_its_last_written_copy_are_left_as_they_are(tmp_path, throwaway_home, monkeypatch):

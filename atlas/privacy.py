@@ -93,6 +93,9 @@ _FIELD_END = re.compile(r"[,;&)\]}]")
 _WORD_RUN = re.compile(r"\w*")
 _SCALE = 2 ** 40
 
+RULES = 2
+"""Raised with every change to what `scrub` masks, so each record is masked again by the new rules."""
+
 Rules = tuple[str, ...]
 Glued = tuple[int, Rules]
 Reader = tuple[int, bool, Rules]
