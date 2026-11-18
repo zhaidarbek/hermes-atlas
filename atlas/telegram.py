@@ -14,6 +14,10 @@ Hermes v0.23.0 carries markup two ways, and each message kind goes the way it le
                  `](`, `~~`, `||`, `$$`, a `<` before a letter, a `#` or `>` that begins a line, a
                  task box and every `|`; `*` and a backtick become ∗ and ˋ. A word joiner escapes
                  a word joiner, ∗ or ˋ the text already held.
+Hermes reads a message too, before Telegram does: `MEDIA:<path>` anywhere in it attaches that
+file, and the gateway attaches a file whose path stands in an answer outside code. A word joiner
+breaks both in text, and neither is put in code. What Telegram links with no markup at all (a
+domain, an @name, a /command) goes in code, also inside a bold name.
 A message whose markup would not fit one Telegram message, or that has nothing to style, is sent
 with no markup, neutralised as an answer is, and Hermes sends it as Markdown.
 """
@@ -95,10 +99,31 @@ _URL = re.compile(r"[a-z][a-z0-9+.-]*://[\w\-.~:/?#@!&'()+,;=%]+")
 _PATH = re.compile(r"[\w.~-]*/[\w./~-]*")
 _FILE = re.compile(r"[\w-]+\.(?:py|js|ts|md|txt|json|ya?ml|toml|csv|pdf|sh|go|rs|sql|log|ini|cfg|lock|html|css|gpx)")
 _HOST = re.compile(r"[\w.-]+")
+_CODABLE = re.compile(r"[^\s*`\u2060∗ˋ\\<>|$]+")
+_LINKED = re.compile(r"@\w|[^\W_]\.[^\W\d_]{2,}|://|(?<![\w/])/[A-Za-z]")
+"""What Telegram links with no markup: a mention or an address with an @, a domain, a URL, a command.
+The last also finds a path that begins a word, which the gateway would attach (see _FILE_ROOT)."""
+_FILE_ROOT = re.compile(r"(?<![/:\w.])/(?=[\w.-])")
+"""The slash that begins a path. The gateway attaches the file at a path it finds in an answer's
+text outside code (gateway/platforms/base.py, extract_local_files); a word joiner after it stops that."""
+_ATTACH = re.compile(r"(?<=MEDIA)(?=:)|(?<=\[\[)(?=(?:audio_as_voice|as_document)\]\])", re.I)
+"""Where a word joiner stops Hermes reading text as its own directive: `MEDIA:<path>` attaches that
+local file (gateway/platforms/base.py, extract_media, which ignores case), and the two `[[...]]`
+markers are cut from the message."""
 
 
 def _lines(text: str, kind: Kind) -> list[Line]:
-    return [_joined(line) for line in _styled_lines(text, kind)]
+    return [_joined(_unlinked(line)) for line in _styled_lines(text, kind)]
+
+
+def _unlinked(line: Line) -> Line:
+    """A name or hint Telegram would link part of, with that part in code instead."""
+    out: Line = []
+    for style, text in line:
+        out += [(s or style, t) for s, t in _coded(text, links_only=True) if t] if style in ("b", "i") \
+            else [(style, text)]
+    # plain() knows a decoration by the bold after it
+    return out[1:] if len(out) > 1 and out[0][0] == "deco" and out[1][0] == "code" else out
 
 
 def _joined(line: Line) -> Line:
@@ -181,28 +206,42 @@ def _inline(text: str) -> Line:
     return [s for s in spans if s[1]]
 
 
-def _coded(text: str) -> Line:
-    """Paths, file names, URLs, branches and the host before a path, each in code: Telegram then
-    shows it as typed and links none of it."""
+def _coded(text: str, links_only: bool = False) -> Line:
+    """Paths, file names, URLs, branches and the host before a path, each in code, and so is any
+    other run of characters Telegram would link by itself: Telegram then shows it as typed and
+    links none of it."""
     spans: Line = []
     at = 0
     words = list(_WORD.finditer(text))
     for n, m in enumerate(words):
         word = m[0]
-        lead = len(word) - len(word.lstrip("(\"'"))
-        token = word[lead:].rstrip(".,;:!?)\"'")
+        lead, token = _trimmed(word)
         after = words[n + 1][0] if n + 1 < len(words) else ""
-        if not _coded_token(token, words[n - 1][0] if n else "", word, after):
-            continue
-        start = m.start() + lead
-        spans += [("", text[at:start]), ("code", token)]
-        at = start + len(token)
+        found = [(lead, token)]
+        if links_only or not _coded_token(token, words[n - 1][0] if n else "", word, after):
+            runs = [(r.start(), *_trimmed(r[0])) for r in _CODABLE.finditer(word)]
+            found = [(begins + lead, run) for begins, lead, run in runs
+                     if _LINKED.search(run) and not _ATTACH.search(run)]
+        for lead, token in found:
+            start = m.start() + lead
+            spans += [("", text[at:start]), ("code", token)]
+            at = start + len(token)
     spans.append(("", text[at:]))
     return spans
 
 
+def _trimmed(word: str) -> tuple[int, str]:
+    """A word without the quotes and punctuation around it, and how many characters led it."""
+    lead = len(word) - len(word.lstrip("(\"'"))
+    token = word[lead:].rstrip(".,;:!?)\"'")
+    if token.count("(") > token.count(")") and word[lead + len(token):].startswith(")"):
+        token += ")"
+    return lead, token
+
+
 def _coded_token(token: str, before: str, word: str, after: str) -> bool:
-    if not token or re.search(r"[*`\u2060∗ˋ\\<>]", token) or not re.search(r"[^\W\d_]", token):
+    if not token or re.search(r"[*`\u2060∗ˋ\\<>]", token) or not re.search(r"[^\W\d_]", token) \
+            or _ATTACH.search(token):
         return False
     return bool(_URL.fullmatch(token) or _PATH.fullmatch(token) or _FILE.fullmatch(token)
                 or before == "branch" and re.fullmatch(r"[\w./-]+", token)
@@ -218,7 +257,7 @@ def _bare(text: str) -> list[Line]:
 _ATLAS_TAG = re.compile(r"</?(?:b|i|code)>")
 _DECORATION = "|".join(re.escape(e) for e in sorted(DECORATIONS, key=len, reverse=True))
 _HTML_DECORATED = re.compile(rf"^(?:{_DECORATION}) (?=<b>)", re.M)
-_HTML_JOINED = re.compile(r"(</b> {2,})" + re.escape(JOIN))
+_HTML_JOINED = re.compile(r"((?:</b>|^<b>\d+ · .*</code>) {2,})" + re.escape(JOIN), re.M)
 _SPACER = re.compile(rf"^{SPACER}\n", re.M)
 _HTML_HEADING = re.compile("^(" + "|".join(re.escape(e) for e, _ in HEADINGS.values()) + ") <b>("
                            + "|".join(re.escape(h) for _, h in HEADINGS.values())
@@ -242,13 +281,14 @@ def _html_span(span: Span) -> str:
     if style == "heading":
         style, text = "b", HEADINGS[text][1]
     escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace(WJ, "&#8288;")
+    escaped = _ATTACH.sub(WJ, escaped)
     return f"<{style}>{escaped}</{style}>" if style else escaped
 
 
 def _from_html(shown: str) -> str:
     text = _HTML_HEADING.sub(lambda m: COMPOSED[(m[1], m[2])], _SPACER.sub("", shown))
     text = _HTML_JOINED.sub(r"\1", _HTML_DECORATED.sub("", text))
-    return _ENTITY.sub(lambda m: _ENTITIES[m[1]], _ATLAS_TAG.sub("", text))
+    return _ENTITY.sub(lambda m: _ENTITIES[m[1]], _ATLAS_TAG.sub("", text).replace(WJ, ""))
 
 
 # ---- Markdown (the gateway's answers, and a message sent bare) ---------------------------------
@@ -279,12 +319,13 @@ def _markdown_line(line: Line) -> list[str]:
 def _neutral(text: str, before: str) -> str:
     """`text` as format_message reads it as text alone; `before` is what precedes it on its line."""
     out = []
+    directives = {m.start() for m in _ATTACH.finditer(text)} | {m.end() for m in _FILE_ROOT.finditer(text)}
     for n, ch in enumerate(text):
         prior = text[n - 1] if n else ""
         if ch in (WJ, "∗", "ˋ"):
             out.append(WJ + ch)
             continue
-        if (ch == "(" and prior == "]" or ch in "~$" and prior == ch or ch == "|"
+        if (ch == "(" and prior == "]" or ch in "~$" and prior == ch or ch == "|" or n in directives
                 or ch in "#>" and _LINE_OPENS.fullmatch(before + text[:n])
                 or ch == "[" and _TASK_BOX.fullmatch(before + text[:n])
                 or prior == "<" and (ch.isascii() and ch.isalpha() or ch == "/")):
