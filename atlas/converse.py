@@ -51,7 +51,7 @@ from typing import Callable, Sequence, get_args
 from zoneinfo import ZoneInfo
 
 from . import forget, neglect, pausing, review
-from .librarian import CONVERSE, Librarian, Llm, ModelError, ask, supported
+from .librarian import CONVERSE, Librarian, Llm, ModelError, _safe, ask, supported
 from .messages import RESUME_HINT
 from .model import (AddArea, ApplyNote, Area, BriefStep, Command, Continue, EndingProposal, EndPause, FindQ,
                     HoldDecision, HoldStep, MarkStep, Merge, NeglectedQ, Note, NoteOrigin, OutsideAction, OwnerMessage,
@@ -429,14 +429,15 @@ _FILLER = frozenset({"the", "my", "a", "an", "one", "project", "pursuit", "it", 
 """Words that name no Pursuit, so "drop it" names none."""
 
 
-def _resolve(words: str, pursuits: Sequence[Pursuit]) -> Pursuit:
+def _resolve(words: str, pursuits: Sequence[Pursuit], shown: Callable[[str], str] = str) -> Pursuit:
     """The one Pursuit the owner's words name: its exact name, or the only Pursuit whose name holds
-    each of their other words ("the bike planner" -> "Bike route planner")."""
-    exact = [p for p in pursuits if p.name.casefold() == words.strip().casefold()]
+    each of their other words ("the bike planner" -> "Bike route planner"). Model text names a
+    Pursuit as `shown` (librarian._safe) writes its name, so two names written alike are ambiguous."""
+    exact = [p for p in pursuits if shown(p.name).casefold() == words.strip().casefold()]
     if len(exact) == 1:
         return exact[0]
     wanted = {w for w in _words(words) if w not in _FILLER}
-    found = [p for p in pursuits if wanted and wanted <= set(_words(p.name))]
+    found = [p for p in pursuits if wanted and wanted <= set(_words(shown(p.name)))]
     if len(found) > 1:
         raise _Unclear("AMBIGUOUS:" + "|".join(sorted(p.name for p in found)))
     if not found:
@@ -520,7 +521,7 @@ def _modelled(text: str, snap: Snapshot, llm: Llm, kinds: frozenset[type]) -> tu
             raise _Unclear(UNREAD)
         for name in _NAMING:
             if name in values:
-                values[name] = _resolve(values[name], pursuits).id
+                values[name] = _resolve(values[name], pursuits, _safe).id
         if cls is AddArea and not _area(values["area"], areas):
             areas.append(Area(values["area"]))
         if cls is SetArea:
@@ -537,4 +538,8 @@ def _modelled(text: str, snap: Snapshot, llm: Llm, kinds: frozenset[type]) -> tu
 
 
 def _area(words: str, areas: Sequence[str]) -> Area | None:
-    return next((Area(a) for a in areas if a.casefold() == words.casefold()), None)
+    """The Area model text names, as librarian._safe writes its name; two written alike are unclear."""
+    found = [Area(a) for a in areas if _safe(a).casefold() == words.casefold()]
+    if len(found) > 1:
+        raise _Unclear(UNREAD)
+    return found[0] if found else None
