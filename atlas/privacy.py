@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import bisect
 import functools
+import heapq
 import math
 import re
 from collections import Counter
@@ -288,16 +289,15 @@ def _second_pass(text: str, glued: list[Glued]) -> str:
     mask took. The names no detector reads are a family of their own. A run masked to its end goes
     on after the masks that follow it, by the rules of every name read in it, as its name will be
     read before those masks."""
-    names = sorted([*_names(text), *_more_names(text), *((value, -1, 2, rules) for value, rules in glued)])
+    names = [*_names(text), *_more_names(text), *((value, -1, 2, rules) for value, rules in glued)]
+    heapq.heapify(names)
     reached = [0, 0, 0, 0]
     masks: list[Mask] = []
-    i = 0
-    while i < len(names):
-        end = m.start() if (m := _VALUE_END.search(text, names[i][0] + 1)) else len(text)
+    while names:
+        end = m.start() if (m := _VALUE_END.search(text, names[0][0] + 1)) else len(text)
         readers: list[Reader] = []
-        while i < len(names) and names[i][0] < end:
-            value, name, family, rules = names[i]
-            i += 1
+        while names and names[0][0] < end:
+            value, name, family, rules = heapq.heappop(names)
             if family == 2 or masks and masks[-1][1] > name:
                 readers.append((value, True, rules))
             elif name < reached[family]:
@@ -309,7 +309,7 @@ def _second_pass(text: str, glued: list[Glued]) -> str:
         masks += found
         if found and found[-1][1] == end and (m := _MASKS_AHEAD.match(text, end)):
             every = tuple(sorted({rule for _, _, rules in readers for rule in rules}))
-            bisect.insort(names, (m.end(), -1, 2, every), lo=i)
+            heapq.heappush(names, (m.end(), -1, 2, every))
     out, done = [], 0
     for start, stop, kind in masks:
         out += (text[done:start], f"[secret: {kind}]")
