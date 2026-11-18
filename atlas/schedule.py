@@ -110,7 +110,8 @@ def install_tick(hermes_home: Path) -> str:
 class TickLease:
     """Context manager: fcntl.flock(LOCK_EX | LOCK_NB) on .atlas/tick.lock; `.held` False if busy.
     A tick never waits, so a long backfill or collect holding it never delays the send phase.
-    Backfill waits (`wait=True`) for a tick's collect to finish."""
+    Backfill waits (`wait=True`) for a tick's collect to finish. Never makes the record folder:
+    while there is none, `.held` is False."""
     NAME = "tick.lock"
 
     def __init__(self, root: Path, wait: bool = False) -> None:
@@ -120,8 +121,11 @@ class TickLease:
         self.held = False
 
     def __enter__(self) -> "TickLease":
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = open(self._path, "a+b")
+        try:
+            self._path.parent.mkdir(exist_ok=True)
+            self._file = open(self._path, "a+b")
+        except FileNotFoundError:
+            return self
         try:
             fcntl.flock(self._file, fcntl.LOCK_EX | (0 if self._wait else fcntl.LOCK_NB))
             self.held = True
@@ -132,7 +136,8 @@ class TickLease:
     def __exit__(self, *exc) -> None:
         if self.held:
             fcntl.flock(self._file, fcntl.LOCK_UN)
-        self._file.close()
+        if self._file is not None:
+            self._file.close()
         self.held = False
 
 

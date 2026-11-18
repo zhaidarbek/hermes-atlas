@@ -86,6 +86,8 @@ def _act(cmd) -> dict:
         outcome = _atlas().act(cmd, Owner("board", note), now)
     except KeyError:
         raise HTTPException(404, "No such Pursuit")
+    except FileNotFoundError:
+        raise HTTPException(404, "Atlas has no record yet. Run hermes atlas setup first.")
     except Ambiguous:
         raise HTTPException(409, "Several Pursuits match")
     except Conflict:

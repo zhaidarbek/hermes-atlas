@@ -57,6 +57,7 @@ from __future__ import annotations
 import base64
 import bisect
 import difflib
+import errno
 import hashlib
 import io
 import itertools
@@ -1191,7 +1192,8 @@ class Record:
         staging leaves the commit ready, its other writes made and no delete, for a replay to finish
         once the link is gone, and raises Blocked; until then a commit that writes or deletes in a
         Session folder it has left raises Blocked. A write that leaves a file's bytes as they are
-        drops out, and a commit with nothing left changes nothing."""
+        drops out, and a commit with nothing left changes nothing. Creates no record: FileNotFoundError
+        for one setup never made."""
         with _txn.write_lock(self.root):
             self._recover()
             self._absorb()
@@ -1271,12 +1273,17 @@ class Record:
 
     def create(self, settings: Settings, profile: Profile) -> Revision:
         """Setup: README.md, settings.md, profile.md, pauses.md, forgotten.md, folders,
-        .atlas/. Idempotent: existing files are left alone. Raises NotLocal on a network mount."""
+        .atlas/. Idempotent: existing files are left alone. The folder is 0700 from the moment it is
+        made. Raises NotLocal on a network mount, OSError(ELOOP) when a link stands where .atlas or a
+        snapshot folder is."""
         _txn.require_local(self.root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root.parent.mkdir(parents=True, exist_ok=True)
+        self.root.mkdir(mode=0o700, exist_ok=True)
         if self.root.stat().st_mode & 0o777 != 0o700:
             os.chmod(self.root, 0o700)
         for folder in (*_layout.FOLDERS, _txn.MACHINERY):
+            if folder in (*_layout.SNAPSHOT_FOLDERS, _txn.MACHINERY) and (self.root / folder).is_symlink():
+                raise OSError(errno.ELOOP, "a link stands where a folder of the record is", str(self.root / folder))
             (self.root / folder).mkdir(exist_ok=True)
         first = {"readme": None, "settings": settings, "profile": profile, "pauses": (),
                  "forgotten": Forgotten((), frozenset())}
@@ -1314,8 +1321,9 @@ class Record:
             self._uncache(set(evidence))
 
     def reindex(self) -> int:
-        """Rebuilds .atlas/index.sqlite from the files; the number of Sessions it holds. Always safe."""
-        return self.snapshot().index()
+        """Rebuilds .atlas/index.sqlite from the files; the number of Sessions it holds. Always safe.
+        Builds none for a record setup never made."""
+        return self.snapshot().index() if _txn.machinery(self.root).is_dir() else 0
 
     def _absorb(self) -> list[HandEdit]:
         """Under the write lock, in one transaction: each record file edited by hand or deleted is

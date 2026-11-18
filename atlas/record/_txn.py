@@ -59,15 +59,22 @@ def machinery(root: Path) -> Path:
 
 @contextmanager
 def write_lock(root: Path) -> Iterator[None]:
-    """fcntl.flock(LOCK_EX) on <root>/.atlas/write.lock. Held only while applying bytes."""
-    path = machinery(root) / "write.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a+b") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+    """fcntl.flock(LOCK_EX) on <root>/.atlas/write.lock. Held only while applying bytes. Makes no
+    folder and follows no link at .atlas or the lock: FileNotFoundError for a record setup never
+    made, OSError(ELOOP or ENOTDIR) when a link or a file stands where .atlas is."""
+    folder = os.open(machinery(root), FOLDER)
+    try:
+        fd = os.open("write.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=folder)
+    finally:
+        os.close(folder)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def stage(root: Path, files: Mapping[str, bytes | None], guards: Mapping[str, str] | None = None) -> str:
