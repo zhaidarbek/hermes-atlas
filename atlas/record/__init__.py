@@ -1193,7 +1193,8 @@ class Record:
         once the link is gone, and raises Blocked; until then a commit that writes or deletes in a
         Session folder it has left raises Blocked. A write that leaves a file's bytes as they are
         drops out, and a commit with nothing left changes nothing. Creates no record: FileNotFoundError
-        for one setup never made."""
+        for one setup never made. Never replaces or deletes a file outside the evidence that Atlas did
+        not write: FileExistsError, and nothing is written."""
         with _txn.write_lock(self.root):
             self._recover()
             self._absorb()
@@ -1212,6 +1213,8 @@ class Record:
                     raise Conflict(op.path)
                 if current == op.data:
                     continue
+                if current is not None and self._foreign(op.path, current):
+                    raise FileExistsError(errno.EEXIST, "a file Atlas did not write is in the way", op.path)
                 files[op.path] = op.data
                 if _layout.RESTORE.get(_layout.kind_of(op.path)) == "mirror":
                     files[_layout.mirror_path(op.path)] = op.data
@@ -1402,6 +1405,12 @@ class Record:
             return (self.root / path).read_bytes()
         except FileNotFoundError:
             return None
+
+    def _foreign(self, path: str, current: bytes) -> bool:
+        """Whether the file at `path`, outside the evidence, is one Atlas never wrote: it holds no seal
+        that verifies and Atlas has no last-written copy of it."""
+        return (_layout.RESTORE.get(_layout.kind_of(path)) == "mirror" and not _layout.session_folder(path)
+                and not _seal.verifies(current) and self._read(_layout.mirror_path(path)) is None)
 
     def _cache_file(self, key: str) -> Path:
         return _txn.machinery(self.root) / CACHE / f"{key}.json"
