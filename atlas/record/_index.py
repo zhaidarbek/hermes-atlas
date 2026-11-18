@@ -1,8 +1,10 @@
 """PRIVATE to atlas.record. The disposable SQLite index: full text over the record's files, so
 FindQ does not read every transcript. It is built from the files alone, holds nothing they do
-not, and is built again whenever the record's HEAD moved since. The commit that removes a
-Session writes it again without that Session's rows, so a Forget leaves no row behind, not even
-in free pages. Deleting it loses nothing. Written only under the record's write lock.
+not, and is built again whenever the record's HEAD moved since. A commit that moves a Session
+into another writes it again without that Session's rows. The commit of a Forget writes it empty,
+because the rows of other Sessions hold the lines of the Pursuits they share with the forgotten
+one, so a Forget leaves none of its words behind, not even in free pages; the next find builds it
+again. Deleting it loses nothing. Written only under the record's write lock.
 
 Built so far: the full-text table. One row per Session: its session.md transcript, its card.md
 and the statements of the Pursuits that list it, all as the record holds them, secrets masked.
@@ -58,6 +60,13 @@ def drop(folder: Path, evidence: set[str]) -> None:
         return
     if any(id in evidence for id, _ in rows):
         build(folder, int(kept[0]) if kept else -1, [(id, body) for id, body in rows if id not in evidence])
+
+
+def empty(folder: Path) -> None:
+    """Writes the index again with no rows and no generation the record has, so the next find
+    builds it from the files as they then are."""
+    if (folder / INDEX).exists():
+        build(folder, -1, [])
 
 
 def generation(folder: Path) -> int | None:

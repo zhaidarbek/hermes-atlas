@@ -9,8 +9,9 @@ ask goes too: the Session's evidence (raw copies, transcript, card, cached model
 Pursuit statement, Step, History line and proposal that cites it, its memberships, a Pursuit
 made from it alone, every Journal line that cites it with each day's Active Time counted again
 without it, every Profile entry drawn from it, every hand-edit Note whose copied text cites it,
-the edit typed there with it, every Note an agent left from it, and every line of a Review drawn from it.
-forgotten.md keeps when, never what, and the
+the edit typed there with it, every Note an agent left from it, every answer Atlas gave the owner
+that repeats its lines (the Note keeps the owner's words, and says the answer is gone), and every
+line of a Review drawn from it. forgotten.md keeps when, never what, and the
 skip key of the Session and of each Session folded into it, so collection never reads them again.
 """
 from __future__ import annotations
@@ -33,6 +34,9 @@ from .rules import Decision
 WORD = "forget"
 WAITS = timedelta(hours=1)
 FORGOTTEN = "Forgotten."
+PREVIEW = "Forgetting removes these for good:"
+ANSWER_GONE = "This answer drew on a Session you forgot, so it went with the Session."
+QUOTED = 15                                  # an answer kept without its sources goes when it holds a removed line this long
 NOT_FOUND = "I found no {harness} Session from {at}."
 SECRETS = ("password", "passphrase", "token", "api key", "key", "secret", "credentials")
 
@@ -92,12 +96,13 @@ def _ask(snap: Snapshot, msg: OwnerMessage, selector: str) -> Decision:
                          NOT_FOUND.format(harness=harness.label, at=f"{at:%a} {at.day} {at:%b %H:%M}"))
     ids = tuple(s.id for s in found)
     cs = snap.changes().set_pending_forget(ForgetPlan(ids, msg.at))
-    return _answered(cs, msg, preview(snap, found, msg))
+    return _answered(cs, msg, preview(snap, found, msg), ids)
 
 
-def _answered(cs: ChangeSet, msg: OwnerMessage, reply: str) -> Decision:
+def _answered(cs: ChangeSet, msg: OwnerMessage, reply: str, drawn: Sequence[EvidenceId] = ()) -> Decision:
+    """The preview names what the Sessions left in the record, so its Note goes with them."""
     note = Note(rules.note_id(msg), msg.at.replace(second=0, microsecond=0), NoteOrigin.OWNER, msg.via, msg.text,
-                atlas_reply=reply, platform_ref=msg.platform_ref)
+                atlas_reply=reply, platform_ref=msg.platform_ref, derived_from=tuple(drawn))
     return Decision(cs.append_note(note), Outcome(True, (reply,)))
 
 
@@ -118,6 +123,7 @@ class _Gone:
     profile: int
     notes: tuple[Note, ...]
     reviews: tuple[tuple[SentReview, int], ...]                            # Review, lines removed
+    answers: tuple[Note, ...]                                              # the owner's Notes whose reply goes
 
 
 def _closure(snap: Snapshot, ids: frozenset[EvidenceId]) -> _Gone:
@@ -125,21 +131,28 @@ def _closure(snap: Snapshot, ids: frozenset[EvidenceId]) -> _Gone:
     notes = tuple(n for n in snap.notes() if (n.origin is NoteOrigin.HAND_EDIT
                   and {*n.derived_from, *sessions_cited(n.text, n.diff or "")} & ids)
                   or (n.origin in (NoteOrigin.AGENT, NoteOrigin.REFUSED_UPDATE) and set(n.derived_from) & ids))
-    pursuits = []
+    cited = ids | {n.id for n in notes if n.origin is NoteOrigin.AGENT}
+    pursuits, lines = [], []
     for p in snap.pursuits():
-        after, counts = _without(p, ids | {n.id for n in notes if n.origin is NoteOrigin.AGENT})
+        after, counts = _without(p, cited)
         if after != p:
             pursuits.append((p, after, counts))
+            r = p.resume
+            lines += [s.text for s in (*r.where, *r.left_off, *r.decided, *r.open_questions,
+                                       *([p.next_step.text] if p.next_step else [])) if cites(s) & cited]
     days = []
     for day in snap.journal_days():
         j = snap.journal(day)
-        lines = sum(1 for s in j.lines if cites(s) & ids)
-        if lines or set(j.evidence) & ids:
-            days.append((day, lines))
+        n = sum(1 for s in j.lines if cites(s) & ids)
+        if n or set(j.evidence) & ids:
+            days.append((day, n))
     profile = sum(1 for e in snap.profile().entries if cites(e.statement) & ids)
+    quoted = [text.casefold() for text in lines if len(text) >= QUOTED]
+    answers = tuple(n for n in snap.notes() if n.origin is NoteOrigin.OWNER and n.atlas_reply not in (None, ANSWER_GONE)
+                    and (set(n.derived_from) & cited or any(text in n.atlas_reply.casefold() for text in quoted)))
     reviews = tuple((r, n) for r in snap.reviews()
                     if (n := len({line for id, lines in r.drawn_from if id in ids for line in lines})))
-    return _Gone(tuple(pursuits), tuple(days), profile, notes, reviews)
+    return _Gone(tuple(pursuits), tuple(days), profile, notes, reviews, answers)
 
 
 def _without(p: Pursuit, ids: frozenset[EvidenceId]) -> tuple[Pursuit | None, dict[str, int]]:
@@ -173,7 +186,7 @@ def _basis(proposal: Proposal) -> Statement:
 def preview(snap: Snapshot, found: Sequence[SessionEvidence], msg: OwnerMessage) -> str:
     gone = _closure(snap, frozenset(s.id for s in found))
     today = msg.at.astimezone(ZoneInfo(snap.settings().timezone)).date()
-    lines = ["Forgetting removes these for good:",
+    lines = [PREVIEW,
              "- the Session itself" if len(found) == 1 else f"- the {len(found)} Sessions themselves"]
     for before, after, counts in gone.pursuits:
         if after is None:
@@ -200,6 +213,8 @@ def preview(snap: Snapshot, found: Sequence[SessionEvidence], msg: OwnerMessage)
     if len(gone.notes) > edits:
         n = len(gone.notes) - edits
         lines.append(f"- {n} Note{_s(n)} an agent left from it")
+    if answers := sum(1 for note in gone.answers if not note.atlas_reply.startswith(PREVIEW)):
+        lines.append(f"- {answers} answer{_s(answers)} I gave you that repeat{'s' if answers == 1 else ''} its lines")
     copies = " and ".join(dict.fromkeys(_outside(s) for s in found))
     secret = next((w for w in SECRETS if re.search(rf"\b{w}\b", msg.text, re.I)), None)
     lines += [f"Not removed: {copies}.",
@@ -234,8 +249,9 @@ def _s(n: int) -> str:
 
 def execute(snap: Snapshot, evidence: Sequence[EvidenceId], now: datetime) -> ChangeSet:
     """One ChangeSet: the evidence removed, every file that cites it rewritten without it, the
-    Journal's Active Time counted again, forgotten.md told, its filing back-off and the Profile texts
-    corrected away that rested on it dropped, and the plan cleared."""
+    Journal's Active Time counted again, each answer that repeats its lines replaced in its Note,
+    forgotten.md told, its filing back-off and the Profile texts corrected away that rested on it
+    dropped, and the plan cleared."""
     held = {h.id: h for h in snap.held().sessions()}
     ids = frozenset(evidence)
     keys = set()
@@ -255,6 +271,7 @@ def execute(snap: Snapshot, evidence: Sequence[EvidenceId], now: datetime) -> Ch
         cs.put_profile(replace(profile, entries=tuple(e for e in profile.entries if not cites(e.statement) & ids)))
     for note in gone.notes:
         cs.remove_note(note)
+    cs.put_notes(replace(note, atlas_reply=ANSWER_GONE, derived_from=()) for note in gone.answers)
     for r, _ in gone.reviews:
         cs.put_review(review.without(r, ids))
     for id in sorted(ids & held.keys()):
@@ -302,15 +319,17 @@ def _rewrite_days(snap: Snapshot, cs: ChangeSet, days: Sequence[date], ids: froz
 
 
 def folded_keys(s: SessionEvidence) -> set[str]:
-    """The skip key of each Session folded into this one, found by its part's origin: the first
-    16 hex digits of sha256("<harness>:<native key>"), the child's native key read from its part."""
+    """The skip key of each Session folded into this one: those its session.md keeps, and for a
+    Session folded before it kept them, those found by its part's origin: the first 16 hex digits
+    of sha256("<harness>:<native key>"), the child's native key read from its part's name. That
+    finds no Session whose native key is more than its id, such as Devin's."""
     own = hashlib.sha256(f"{s.harness.value}:{s.native_key}".encode()).hexdigest()[:16]
     prefixes = {p.origin.split(":", 1)[0] for p in s.parts if p.origin and not p.origin.startswith(own + ":")}
     if not prefixes:
-        return set()
+        return set(s.folded)
     natives = {t.part.split("/", 1)[0].split(":", 1)[1] for t in s.turns if ":" in t.part.split("/", 1)[0]}
     natives |= {re.sub(r"^(?:t3-child|subagent)-", "", p.name.removesuffix(".jsonl.zst")) for p in s.parts}
-    keys = set()
+    keys = set(s.folded)
     for native in natives:
         for h in HarnessId:
             if hashlib.sha256(f"{h.value}:{native}".encode()).hexdigest()[:16] in prefixes:

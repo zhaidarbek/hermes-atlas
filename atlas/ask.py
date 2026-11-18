@@ -19,7 +19,7 @@ from typing import Mapping, Sequence
 from . import messages
 from .messages import RESUME_HINT, Bare, Style
 from .model import (ONE_OFF, Cite, DayTime, EvidenceId, Fact, Inference, OutsideAction, Pursuit, SessionEvidence,
-                    Statement, harness_of)
+                    Statement, cites, harness_of)
 from .record import Snapshot
 
 CANNOT_SEND = "I can't send anything to other people. I only read, record, and message you."
@@ -74,6 +74,15 @@ def resume(snap: Snapshot, p: Pursuit, now: datetime) -> str:
     if p.resume.reopen:
         lines.append("Sessions to reopen: " + ", ".join(_reopen(snap, id, now) for id in p.resume.reopen))
     return "\n".join([*lines, RESUME_HINT])
+
+
+def drawn_from(p: Pursuit) -> tuple[EvidenceId, ...]:
+    """What an answer that repeats `p`'s Resume Note draws on: the Sessions and Notes its lines and
+    its Next Step cite, and the Sessions it lists to reopen. The Note that keeps the answer names
+    them, so a Forget of one takes the answer too."""
+    r = p.resume
+    said = [*r.where, *r.left_off, *r.decided, *r.open_questions, *([p.next_step.text] if p.next_step else [])]
+    return tuple(sorted({id for s in said for id in cites(s)} | set(r.reopen)))
 
 
 def week_time(start: date, end: date, days: Sequence[DayTime], names: Mapping[str, str]) -> str:

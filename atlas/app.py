@@ -27,7 +27,7 @@ from .model import (Agent, Answer, ApplyNote, Authority, BoardQ, ChangeSettings,
                     Coverage, DayTime, EvidenceId, FindQ, HarnessId, HarnessSetting, InterfaceSetting, NeglectedQ, NoteOrigin,
                     Owner,
                     OwnerMessage, Outcome, PeriodTimeQ, Profile, Query, Reply, RequestForget, ResumePromptQ, ResumeQ,
-                    SendStatus, Sent, SentBrief, SentRef, SessionCard, Settings, Split, Status, WhichQ, sent_sha256)
+                    SendStatus, Sent, SentBrief, SentRef, SessionCard, Settings, Split, Status, WhichQ, cites, sent_sha256)
 from .record import Blocked, ChangeSet, Conflict, ImportLog, Record, Snapshot
 from .sources import webchat
 from .rules import Decision
@@ -287,7 +287,8 @@ class Atlas:
                 self._cancel_forget()
             self._heard(msg)
             return None
-        answers = {q: self._answered(q, msg.at) for q in reading.asks if not isinstance(q, ResumePromptQ)}
+        read = {q: self._answered(q, msg.at) for q in reading.asks if not isinstance(q, ResumePromptQ)}
+        answers, drawn = {q: a.data for q, a in read.items()}, {q: a.drawn_from for q, a in read.items()}
         try:
             applies = {cmd.note: _applied(snap, librarian, cmd.note)
                        for cmd in reading.commands if isinstance(cmd, ApplyNote)}
@@ -302,7 +303,7 @@ class Atlas:
                         type(failed).__name__)
             return None
         try:
-            decision = self._decide(lambda s: _conversed(s, msg, reading, answers, applies, prework))
+            decision = self._decide(lambda s: _conversed(s, msg, reading, answers, applies, prework, drawn))
         except Exception as failed:
             log.warning("Atlas read a message and could not commit it (%s)", type(failed).__name__)
             return self._settled(msg)
@@ -345,7 +346,8 @@ class Atlas:
             return rules.board(snap)
         now = (now or datetime.now().astimezone()).astimezone(ZoneInfo(snap.settings().timezone))
         if isinstance(q, ResumeQ):
-            return Answer(None, (), Coverage(), data=ask.resume(snap, snap.pursuit(q.pursuit), now))
+            p = snap.pursuit(q.pursuit)
+            return Answer(None, (), Coverage(), data=ask.resume(snap, p, now), drawn_from=ask.drawn_from(p))
         if isinstance(q, PeriodTimeQ):
             days = _days(snap, q.start, min(q.end, now.date()), now.date())
             names = {p.id: p.name for p in snap.pursuits()}
@@ -361,7 +363,8 @@ class Atlas:
             if found.data is None:
                 return Answer(None, (), Coverage(), data=ask.FOUND_NOTHING)
             line = found.statements[0] if found.statements else None
-            return Answer(None, found.statements, Coverage(), data=ask.found(snap, snap.session(found.data), line, now))
+            return Answer(None, found.statements, Coverage(), data=ask.found(snap, snap.session(found.data), line, now),
+                          drawn_from=tuple(sorted({found.data, *(id for s in found.statements for id in cites(s))})))
         raise NotImplementedError(type(q).__name__)
 
     def reindex(self) -> int:
@@ -398,14 +401,14 @@ class Atlas:
         librarian = Librarian(self._llm, self._record)
         return {c: librarian.partition(snap, snap.pursuit(c.pursuit), c.criterion, c.new_name) for c in splits}
 
-    def _answered(self, q: Query, now: datetime) -> str:
-        """The text that answers a question, written before the Note's commit, so a model call
-        holds no lock; a question Atlas could not answer gets D Q8's failure line."""
+    def _answered(self, q: Query, now: datetime) -> Answer:
+        """The text that answers a question, with what it draws on, written before the Note's commit,
+        so a model call holds no lock; a question Atlas could not answer gets D Q8's failure line."""
         try:
-            return self.read(q, now).data
+            return self.read(q, now)
         except Exception as failed:
             log.warning("Atlas could not answer a question (%s)", type(failed).__name__)
-            return f"I couldn't answer that: {_why(failed)}."
+            return Answer(None, (), Coverage(), data=f"I couldn't answer that: {_why(failed)}.")
 
     def _decide(self, plan: Callable[[Snapshot], Decision], attempts: int = 5) -> Decision:
         """snapshot -> plan -> commit; on Conflict re-snapshot and re-plan. Plans are pure and
@@ -1012,12 +1015,13 @@ def _built(snap: Snapshot) -> date | None:
 
 
 def _conversed(snap: Snapshot, msg: OwnerMessage, reading: converse.Interpretation, answers: Mapping[Query, str],
-               applies: Mapping[EvidenceId, Sequence[Command]], prework: Mapping[Command, object]) -> Decision:
+               applies: Mapping[EvidenceId, Sequence[Command]], prework: Mapping[Command, object],
+               drawn: Mapping[Query, Sequence[EvidenceId]]) -> Decision:
     """The owner's words decided: a Forget by its own rules, any other message cancelling a Forget
     that waits for "forget"."""
     if forgets := [c for c in reading.commands if isinstance(c, (RequestForget, ConfirmForget))]:
         return forget.converse(snap, msg, forgets[0])
-    decision = rules.converse(snap, msg, reading.commands, reading.asks, applies, prework, answers)
+    decision = rules.converse(snap, msg, reading.commands, reading.asks, applies, prework, answers, drawn)
     if reading.cancel_pending_forget:
         forget.cancel(decision.changes, snap)
     return decision
