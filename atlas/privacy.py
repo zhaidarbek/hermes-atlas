@@ -3,8 +3,9 @@ librarian before every model input, and record._codec when rendering ANY record 
 than raw/ parts (transcripts, Notes, Resume Notes, Journal, Profile, sent messages). Answers and
 agent reads come from the record, so they are masked too. Raw parts stay verbatim (R2 Q4);
 Forget is the remedy for a pasted secret. Detection is best effort.
-Detectors: PEM private keys, whole or cut off; URLs with credentials; known key prefixes (sk-,
-sk_live_, ghp_, glpat-, xox*, AKIA..., AIza, hf_, Telegram bot tokens); Authorization headers;
+Detectors: PEM private keys, whole or cut off; URLs with credentials, with or without a user;
+known key prefixes (sk-, sk_live_, ghp_, glpat-, xox*, AKIA..., AIza, hf_, Telegram bot tokens, also
+after /bot in a Bot API URL); Authorization headers;
 and the value after a name that says it is secret, either an environment variable such as
 AWS_SECRET_ACCESS_KEY= or HF_TOKEN=, or words such as "password is" or "token:". A password
 is masked when it has a digit or a symbol, an environment value when it has a digit, and any
@@ -19,6 +20,11 @@ next , ; & ) ] or } of that value, and there a password needs a digit, as the ot
 already ask: code and prose stay as written (`{auth:{pwd:form.v,ttl:0}}`). A mask can also start
 a word, so a Telegram token right after one whose first digit is not ASCII (`]١23456789:...`) is
 masked too, as the detectors would mask it on a second pass.
+The second pass alone reads four more names, so the detectors read every other name as before: an
+environment variable whose secret word is joined to the word before it (PGPASSWORD=), a name after
+"_" in lower case that is no password (access_token=, aws_secret_access_key =), a flag whose value
+follows a space (--password <password>), and any name whose value follows a mask
+(`token: [secret: a]<token>`). The first three are a family of their own, nested like the others.
 """
 from __future__ import annotations
 
@@ -29,10 +35,12 @@ import re
 from collections import Counter
 from typing import Callable, Iterator
 
-_PEM = re.compile(r"-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----(?:.*?-----END \1PRIVATE KEY-----"
-                  r"|(?:\r?\n[A-Za-z0-9+/=]{64})*(?:\r?\n[A-Za-z0-9+/=]{1,64})?)", re.S)
+_PEM_BEGIN = re.compile(r"-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----")
+_PEM_END = re.compile(r"(?=-----END ([A-Z0-9 ]*)PRIVATE KEY-----)")
+_PEM_CUT_OFF = re.compile(r"(?:\r?\n[A-Za-z0-9+/=]{64})*(?:\r?\n[A-Za-z0-9+/=]{1,64})?")
 _URL_CREDENTIALS = re.compile(r"(?<![a-zA-Z0-9+.-])(?P<scheme>(?:\b[a-zA-Z]|(?>[a-zA-Z0-9+.-]*?[+.-][a-zA-Z]))"
                               r"[a-zA-Z0-9+.-]*+://)[^\s/:@\[\]]+:[^\s/@\[\]]+@")
+_URL_PASSWORD = re.compile(r"(?<=[a-zA-Z0-9+.-]://):[^\s/@\[\]]+@")
 _PREFIXED = (
     ("api key", re.compile(r"\bsk-(?:proj-|ant-[a-z0-9]+-)?[A-Za-z0-9_-]{20,}")),
     ("api key", re.compile(r"\b[rsp]k_(?:live|test)_[A-Za-z0-9]{16,}")),
@@ -42,7 +50,7 @@ _PREFIXED = (
     ("aws key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("google api key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("hugging face token", re.compile(r"\bhf_[A-Za-z0-9]{30,}")),
-    ("telegram bot token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{30,}")),
+    ("telegram bot token", re.compile(r"(?:\b|(?<=/bot))\d{8,10}:[A-Za-z0-9_-]{30,}")),
 )
 _TELEGRAM_AFTER_MASK = re.compile(r"(?<=\])(?:\d{8,10}:(?>[A-Za-z0-9_-]{30,}))+")
 MASK = re.compile(r"\[secret: [A-Za-z ]+\]")
@@ -51,19 +59,35 @@ _VALUE_AHEAD = r"""(?=["']?[^\s"'`\[])"""
 _VALUE_END = re.compile(r"""[\s"'`]|""" + MASK.pattern)
 _AUTHORIZATION = re.compile(r"(?i)(?P<name>\bauthorization\s*:\s*(?:bearer|basic|token)\s+|\bbearer\s+)"
                             r"(?P<value>[A-Za-z0-9._~+/=-]{12,})")
-_ENVIRONMENT_NAME = (r"\b(?P<name>(?P<word>(?:[A-Z][A-Z0-9]*_)*(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD"
+# The lookahead reads the whole name once, so a long run of parts that is no name costs its length.
+_ENVIRONMENT_NAME = (r"\b(?P<name>(?P<word>(?=[A-Z][A-Z0-9]*+(?:_[A-Z0-9]++)*+\s*=)(?:[A-Z][A-Z0-9]*+_)*"
+                     r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD"
                      r"|PASS|PASSPHRASE|CREDENTIALS?|AUTH)(?:_[A-Z0-9]+)*)\s*=\s*)")
 _ENVIRONMENT_WORDS = frozenset(("APIKEY", "KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PWD", "PASS", "PASSPHRASE",
                                 "CREDENTIAL", "CREDENTIALS", "AUTH"))
 _ENVIRONMENT_PARTS = re.compile(r"[A-Z0-9]+(?:_[A-Z0-9]+)*")
 _ENVIRONMENT_EQUALS = re.compile(r"\s*=\s*" + _VALUE_AHEAD)
-_WORDS_NAME = (r"(?i)(?!(?<=\[)secret: [A-Za-z ]+\])\b(?P<name>(?P<word>api[_ -]?key|access[_ -]?key"
-               r"|secret(?:[_ -]?key)?|token|password|passwd|passphrase|pwd|auth)\b[\"']?"
-               r"(?:\s*[:=]\s*|\s+(?:is|was)(?:\s*:\s*|\s+)))")
+_WORD = (r"(?P<word>api[_ -]?key|access[_ -]?key|secret(?:[_ -]?key)?|token|password|passwd|passphrase|pwd|auth)"
+         r"\b[\"']?")
+_SEPARATOR = r"(?:\s*[:=]\s*|\s+(?:is|was)(?:\s*:\s*|\s+))"
+_WORDS_NAME = r"(?i)(?!(?<=\[)secret: [A-Za-z ]+\])\b(?P<name>" + _WORD + _SEPARATOR + ")"
 _ENVIRONMENT = re.compile(_ENVIRONMENT_NAME + _VALUE)
 _WORDS = re.compile(_WORDS_NAME + _VALUE)
 _ENVIRONMENT_START = re.compile(r"\b(?P<word>[A-Z][A-Z0-9_]*)\s*=\s*" + _VALUE_AHEAD)
 _WORDS_ONLY = re.compile(_WORDS_NAME + _VALUE_AHEAD)
+# Names the second pass alone reads: one glued to the word before it (PGPASSWORD), one after "_"
+# in lower case (access_token), a flag with its value after a space (--password <password>), and
+# any name whose value follows a mask (`token: [secret: a]<token>`).
+_ENVIRONMENT_ENDINGS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASSPHRASE")
+_MASKS_THEN_VALUE = "(?:" + MASK.pattern + r""")+(?=[^\s"'`\[])"""
+_MASKED_AHEAD = r"""["']?""" + _MASKS_THEN_VALUE
+_MASK_THEN_VALUE = re.compile(MASK.pattern + r"""(?=[^\s"'`\[])""")
+_MASKS_AHEAD = re.compile(_MASKS_THEN_VALUE)
+_ENVIRONMENT_MASKED = re.compile(r"\b(?P<word>[A-Z][A-Z0-9_]*)\s*=\s*" + _MASKED_AHEAD)
+_WORDS_MASKED = re.compile(_WORDS_NAME + _MASKED_AHEAD)
+_MORE_WORDS = re.compile(r"(?i)(?:(?-i:(?<=[a-z0-9]_))(?!pass|pwd)" + _WORD + _SEPARATOR
+                         + "|(?<=--)" + _WORD.replace("<word>", "<flag>") + r"""\s+(?!["']?[-$<]))"""
+                         + "(?:" + _MASKED_AHEAD + "|" + _VALUE_AHEAD + ")")
 _TRAILING = ".,;:)]}"
 _FIELD_END = re.compile(r"[,;&)\]}]")
 _WORD_RUN = re.compile(r"\w*")
@@ -77,8 +101,9 @@ Mask = tuple[int, int, str]
 
 def scrub(text: str) -> str:
     """Replace each detected secret with "[secret: <kind>]". Idempotent."""
-    text = _PEM.sub("[secret: private key]", text)
+    text = _pem(text)
     text = _URL_CREDENTIALS.sub(lambda m: f"{m['scheme']}[secret: password in URL]@", text)
+    text = _URL_PASSWORD.sub("[secret: password in URL]@", text)
     glued: list[Glued] = []
     for kind, pattern in _PREFIXED:
         text, glued = _sub(pattern, text, glued, lambda m, mask=f"[secret: {kind}]": (m.start(), m.end(), mask))
@@ -87,6 +112,28 @@ def scrub(text: str) -> str:
     text, glued = _sub(_WORDS, text, glued, lambda m: _masked(m, _rules(m["word"], "words")))
     text, glued = _sub(_TELEGRAM_AFTER_MASK, text, glued, lambda m: (*m.span(), "[secret: telegram bot token]"))
     return _second_pass(text, glued)
+
+
+def _pem(text: str) -> str:
+    """Mask each private key: from its BEGIN line to the first END line of the same label after
+    it, or, with none, the base64 lines under it. The END lines are listed once, so many BEGIN
+    lines with no END cost the text's length."""
+    if "PRIVATE KEY-----" not in text:
+        return text
+    ends: dict[str, list[int]] = {}
+    for m in _PEM_END.finditer(text):
+        ends.setdefault(m[1], []).append(m.start())
+    out, done = [], 0
+    while m := _PEM_BEGIN.search(text, done):
+        after = ends.get(m[1], ())
+        i = bisect.bisect_left(after, m.end())
+        if i < len(after):
+            end = after[i] + len(f"-----END {m[1]}PRIVATE KEY-----")
+        else:
+            end = _PEM_CUT_OFF.match(text, m.end()).end()
+        out += (text[done:m.start()], "[secret: private key]")
+        done = end
+    return "".join(out) + text[done:]
 
 
 def _sub(pattern: re.Pattern, text: str, glued: list[Glued],
@@ -207,6 +254,19 @@ def _environment_word(word: str) -> bool:
     return False
 
 
+def _joined_environment_word(word: str) -> bool:
+    """`word` is no name `_ENVIRONMENT_NAME` reads, and the word a secret's name is joined to
+    starts one of its parts (PGPASSWORD, MYSQLPASSWORD_FILE)."""
+    if _environment_word(word) or not _ENVIRONMENT_PARTS.fullmatch(word):
+        return False
+    for part in word.split("_"):
+        if not "A" <= part[0] <= "Z":
+            return False
+        if part.endswith(_ENVIRONMENT_ENDINGS):
+            return True
+    return False
+
+
 def _value_start(text: str, at: int) -> int:
     return at + (text[at] in "\"'")
 
@@ -222,9 +282,11 @@ def _second_pass(text: str, glued: list[Glued]) -> str:
     one run of text at a time (a value runs to a space, a quote or a mask), as the detectors will
     read the output. A name that starts inside a bare value of its own family is nested; every other
     name keeps the detectors' rule, as on its own: a name a family's detector reaches, and a name a
-    mask took."""
-    names = sorted([*_names(text), *((value, -1, 2, rules) for value, rules in glued)])
-    reached = [0, 0]
+    mask took. The names no detector reads are a family of their own. A run masked to its end goes
+    on after the masks that follow it, by the rules of every name read in it, as its name will be
+    read before those masks."""
+    names = sorted([*_names(text), *_more_names(text), *((value, -1, 2, rules) for value, rules in glued)])
+    reached = [0, 0, 0, 0]
     masks: list[Mask] = []
     i = 0
     while i < len(names):
@@ -240,12 +302,34 @@ def _second_pass(text: str, glued: list[Glued]) -> str:
             else:
                 readers.append((value, True, rules))
                 reached[family] = end
-        masks += _run_masks(text, readers, end)
+        found = _run_masks(text, readers, end)
+        masks += found
+        if found and found[-1][1] == end and (m := _MASKS_AHEAD.match(text, end)):
+            every = tuple(sorted({rule for _, _, rules in readers for rule in rules}))
+            bisect.insort(names, (m.end(), -1, 2, every), lo=i)
     out, done = [], 0
     for start, stop, kind in masks:
         out += (text[done:start], f"[secret: {kind}]")
         done = stop
     return "".join(out) + text[done:]
+
+
+def _more_names(text: str) -> Iterator[tuple[int, int, int, Rules]]:
+    """The names the second pass alone reads, as (value, name, family, rules). One whose value
+    follows a mask is read as a name a mask took."""
+    for m in _ENVIRONMENT_START.finditer(text):
+        if _joined_environment_word(m["word"]):
+            yield _value_start(text, m.end()), m.start(), 3, _rules(m["word"], "environment")
+    for m in _MORE_WORDS.finditer(text):
+        rules = _rules(m["word"] or m["flag"], "words")
+        yield (m.end(), -1, 2, rules) if text[m.end() - 1] == "]" else (_value_start(text, m.end()), m.start(), 3, rules)
+    if _MASK_THEN_VALUE.search(text) is None:
+        return
+    for m in _ENVIRONMENT_MASKED.finditer(text):
+        if _environment_word(m["word"]) or _joined_environment_word(m["word"]):
+            yield m.end(), -1, 2, _rules(m["word"], "environment")
+    for m in _WORDS_MASKED.finditer(text):
+        yield m.end(), -1, 2, _rules(m["word"], "words")
 
 
 def _names(text: str) -> Iterator[tuple[int, int, int, Rules]]:

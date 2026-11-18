@@ -9,7 +9,7 @@ import pytest
 
 import scrub_before_75
 from atlas.privacy import (_ENVIRONMENT_NAME, _ENVIRONMENT_START, _URL_CREDENTIALS, _VALUE_AHEAD, MASK,
-                           _environment_word, scrub)
+                           _environment_word, _pem, scrub)
 
 KEY = "sk-proj-" + "Ab3dE5gH7jK9mN1pQ3sT5vX7zB9dF1hJ"
 GITHUB = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
@@ -431,3 +431,98 @@ def test_a_dotted_run_costs_under_a_second_and_grows_with_its_length(name):
     large = fastest(scrub, DOTTED[name](GLUED_LENGTH))
     assert large < 1
     assert large < 8 * fastest(scrub, DOTTED[name](GLUED_LENGTH // 4)) + 0.02
+
+
+@pytest.mark.parametrize("text", [
+    "old_password=old_password,",
+    "hashed_password = hash_password(raw)",
+    'db_password = os.environ["DB_PASSWORD"]',
+    'self.user_password = form.cleaned_data["pw1"]',
+    "next_token = response['NextToken']",
+    "csrf_token = generate_token(request)",
+    "max_token: 4096",
+    "mysql --password --host db1",
+    "use --password prompt please",
+    "the --token flag is deprecated2",
+    "run it with --password $DB_PASS --token <token>",
+    """psql --password "$DB_PASS" -h db and --password '<password>'""",
+    "MONKEY=banana1234 BYPASS=12345678",
+    "see tcp://:8080 and mail user@host",
+    "robot123456789:the-quick-brown-fox-jumps-over-the-lazy-dog",
+    "the password is [secret: password]. Then we went on",
+], ids=lambda text: text[:24])
+def test_code_and_prose_near_the_names_only_the_second_pass_reads_stay_as_written(text):
+    assert scrub(text) == text
+
+
+def test_a_value_goes_on_after_each_mask_while_the_part_before_it_was_masked():
+    assert scrub(f"token: [secret: a]{TOKEN}[secret: a]{TOKEN}.") == "token: " + "[secret: a][secret: token]" * 2 + "."
+    assert scrub(f"token: {TOKEN}[secret: a]{TOKEN}") == "token: [secret: token][secret: a][secret: token]"
+    assert scrub(f"token: ordinary[secret: a]{TOKEN}") == f"token: ordinary[secret: a]{TOKEN}"
+    assert scrub("DB_PASSWORD='Kx7mP2vQ9rTz',OTHER=abc123") == "DB_PASSWORD='[secret: password]',OTHER=abc123"
+
+
+MORE_ATOMS = ["access_token=", "x_token: ", "aws_secret_access_key = ", "client_secret=", "a_auth:", "--password ",
+              "--token ", "--api-key ", "PGPASSWORD=", "XTOKEN=", "MYSECRET_X = ", "[secret: a]", "[secret: a]",
+              "redis://:", "@", "/bot", BOT_TOKEN, "old_password=", "--", "_", "'", ","]
+
+
+def test_scrubbing_twice_changes_nothing_more_on_any_mix_with_the_names_only_the_second_pass_reads():
+    rng = random.Random(43)
+    masked = 0
+    for _ in range(30_000):
+        text = "".join(rng.choices(ATOMS + MORE_ATOMS, k=rng.randint(1, 12)))
+        once = scrub(text)
+        assert scrub(once) == once, text
+        masked += once != scrub_before_75.scrub(text)
+    assert masked > 3_000
+
+
+def test_every_secret_the_scrub_before_75_masked_stays_masked_among_the_names_only_the_second_pass_reads():
+    """But in a URL with no user, whose password is masked whole, and after /bot."""
+    rng = random.Random(44)
+    atoms = [atom for atom in MORE_ATOMS if atom not in ("redis://:", "/bot")]
+    for _ in range(30_000):
+        text = nested_text(rng)
+        for _ in range(rng.randint(1, 3)):
+            at = rng.randrange(len(text) + 1)
+            text = text[:at] + rng.choice(atoms) + text[at:]
+        assert shows_only_what(scrub(text), scrub_before_75.scrub(text)), text
+
+
+PEM_PIECES = ["-----BEGIN PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----", "-----END PRIVATE KEY-----",
+              "-----END RSA PRIVATE KEY-----", "-----", "BEGIN ", "RSA ", "PRIVATE KEY-----", "\n", "\r\n", "A" * 64,
+              "AB==", "x", " "]
+
+
+def test_a_private_key_is_masked_where_the_scrub_before_75_masked_one():
+    rng = random.Random(45)
+    masked = 0
+    for _ in range(100_000):
+        text = "".join(rng.choices(PEM_PIECES, k=rng.randint(1, 12)))
+        after = _pem(text)
+        assert after == scrub_before_75._PEM.sub("[secret: private key]", text), text
+        masked += after != text
+    assert masked > 10_000
+
+
+LONG = {
+    "key-names": lambda n: "KEY_" * (n // 4),
+    "key-names-then-equals": lambda n: "KEY_" * (n // 4) + "=Invented123",
+    "one-long-name": lambda n: "X" * n + "=Invented123",
+    "private-key-headers": lambda n: "-----BEGIN PRIVATE KEY-----" * (n // 27),
+    "private-key-headers-of-many-labels": lambda n: "".join(f"-----BEGIN A{k} PRIVATE KEY-----\n" for k in range(n // 32)),
+    "names-after-an-underscore": lambda n: "a_token=" * (n // 8),
+    "flags": lambda n: "--password a" * (n // 12),
+    "names-then-masks": lambda n: "pwd=[secret: a]A1b2c3!" * (n // 22),
+    "masks-after-a-name": lambda n: "token: " + "[secret: a]" * (n // 11),
+    "values-after-masks": lambda n: "token: " + ("[secret: a]" + TOKEN) * (n // 46),
+    "urls-with-no-user": lambda n: "x://:a" * (n // 6),
+}
+
+
+@pytest.mark.parametrize("name", LONG)
+def test_a_long_run_costs_under_a_second_and_grows_with_its_length(name):
+    large = fastest(scrub, LONG[name](GLUED_LENGTH))
+    assert large < 1
+    assert large < 8 * fastest(scrub, LONG[name](GLUED_LENGTH // 4)) + 0.02

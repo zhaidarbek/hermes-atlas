@@ -40,7 +40,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, NamedTuple
 
-from .. import activetime
+from .. import activetime, privacy
 from ..model import (LOCAL, HarnessId, RawPart, SessionEvidence, Settings, Turn, evidence_id, part_file, part_origin,
                      skip_key)
 
@@ -568,5 +568,7 @@ def _str(value: object) -> str:
 
 
 def _title(said: str) -> str:
-    first = said.strip().splitlines()[0] if said.strip() else ""
-    return first[:80]
+    """A title from the owner's first turn: its first line, masked, then cut to 80 characters
+    before any mask the cut would split, so no part of a secret is kept."""
+    line = privacy.scrub(said.strip().splitlines()[0]) if said.strip() else ""
+    return line[:next((m.start() for m in privacy.MASK.finditer(line) if m.start() < 80 < m.end()), 80)]
