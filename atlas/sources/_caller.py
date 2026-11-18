@@ -88,9 +88,10 @@ def typed(bound: BoundSession, settings: Settings) -> list[Typed]:
     record collection reads as the owner's (not isMeta, a tool result, a sidechain or a system
     prompt) whose content is a string or text blocks only and that names no pasted image; Codex, a
     UserMessage of text blocks only, none with `text_elements` (where Codex marks pasted content
-    and mentions). Blocks a Harness inserts as markup (`<system-reminder>...</system-reminder>`,
-    `<local-command-stdout>...`, `<command-name>...` and the like) are not the owner's words and
-    are taken out; a turn with markup left over holds no typed text."""
+    and mentions). A text block that is one element of markup from end to end, as a Harness inserts
+    them (`<system-reminder>...</system-reminder>`, `<ide_opened_file>...` and the like), is not
+    the owner's words and is left out. A block with markup beside other text holds no typed text,
+    and nor does its turn: the text beside the markup may be a line of a pasted page."""
     adapter = ADAPTERS[bound.harness]
     unit = next((u for u in adapter.units(settings, Sent()) if u.native_key == bound.native_key), None)
     if unit is None:
@@ -107,8 +108,7 @@ def _claude_typed(r: dict) -> Typed | None:
     blocks = [content] if isinstance(content, str) else content if isinstance(content, list) else None
     texts = [b if isinstance(b, str) else b.get("text") if isinstance(b, dict) and b.get("type") == "text" else None
              for b in blocks or [None]]
-    whole = None if None in texts or r.get("imagePasteIds") else "\n".join(texts)
-    return Typed(_when(r["timestamp"]), _owner_text(whole))
+    return Typed(_when(r["timestamp"]), None if None in texts or r.get("imagePasteIds") else _owner_text(texts))
 
 
 def _codex_typed(r: dict) -> Typed | None:
@@ -119,14 +119,12 @@ def _codex_typed(r: dict) -> Typed | None:
     blocks = item.get("content") if isinstance(item.get("content"), list) else [{"type": "text", "text": item.get("text")}]
     plain = all(isinstance(b, dict) and str(b.get("type")).lower() == "text" and isinstance(b.get("text"), str)
                 and not b.get("text_elements") for b in blocks) and blocks
-    return Typed(_when(r["timestamp"]), _owner_text("\n".join(b["text"] for b in blocks) if plain else None))
+    return Typed(_when(r["timestamp"]), _owner_text([b["text"] for b in blocks]) if plain else None)
 
 
-def _owner_text(text: str | None) -> str | None:
-    if text is None:
-        return None
-    left = _INSERTED.sub("", text)
-    return None if _MARKUP.search(left) else left.strip()
+def _owner_text(blocks: list[str]) -> str | None:
+    own = [b for b in blocks if not _INSERTED.fullmatch(b.strip())]
+    return None if any(_MARKUP.search(b) for b in own) else "\n".join(own).strip()
 
 
 def find_instruction(bound: BoundSession, owner_words: str, settings: Settings) -> Instruction | None:

@@ -51,7 +51,7 @@ from typing import Callable, Sequence, get_args
 from zoneinfo import ZoneInfo
 
 from . import forget, neglect, pausing, review
-from .librarian import CONVERSE, Librarian, Llm, ModelError, ask
+from .librarian import CONVERSE, Librarian, Llm, ModelError, ask, supported
 from .messages import RESUME_HINT
 from .model import (AddArea, ApplyNote, Area, BriefStep, Command, Continue, EndingProposal, EndPause, FindQ,
                     HoldDecision, HoldStep, MarkStep, Merge, NeglectedQ, Note, NoteOrigin, OutsideAction, OwnerMessage,
@@ -495,7 +495,10 @@ def filing_schema() -> dict:
 def _modelled(text: str, snap: Snapshot, llm: Llm, kinds: frozenset[type]) -> tuple[Command, ...]:
     """The model's reading of words the grammar cannot read, as commands of the `kinds` the words
     ask for only, and a Merge or Split once. Every Pursuit a command names must be one the record
-    holds, and every Area one the owner has or adds in the same message."""
+    holds, and every Area one the owner has or adds in the same message. A Merge's rule and a
+    Split's criterion become Filing rules cited to the owner's Note, so each holds only words of
+    the message (librarian.supported): a rule that adds to them is left out, and a criterion that
+    does leaves the message unread."""
     pursuits, areas = snap.pursuits(), list(snap.profile().areas)
     listed = "\n".join(f"- {p.name} · {p.kind.value} · {p.area} · {p.status.value}" for p in pursuits)
     out = ask(llm, CONVERSE, FILING, f"Areas: {', '.join(areas)}\nPursuits:\n{listed}\n\nMessage: {text}",
@@ -510,6 +513,10 @@ def _modelled(text: str, snap: Snapshot, llm: Llm, kinds: frozenset[type]) -> tu
             raise _Unclear(UNREAD)
         values = {k: " ".join(v.split()) for k, v in values.items()}
         if any(not v for k, v in values.items() if k != "rule"):
+            raise _Unclear(UNREAD)
+        if "rule" in values and not supported(values["rule"], text):
+            values["rule"] = ""
+        if "criterion" in values and not supported(values["criterion"], text):
             raise _Unclear(UNREAD)
         for name in _NAMING:
             if name in values:

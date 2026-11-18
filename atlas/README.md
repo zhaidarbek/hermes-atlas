@@ -174,7 +174,7 @@ Replies to the brief, where the number is the Step's number in the brief you rep
 |---|---|
 | `1 done` or `1 done, 10/10 pass` | Marks Step 1 done; words after it are kept as the detail. |
 | `skip 2` or `2 skip, not today` | Skips Step 2. |
-| `1 prompt` | Sends a paste-in prompt for Step 1 as its own message, to paste into any Harness. |
+| `1 prompt` | Sends a paste-in prompt for Step 1 as its own message, to paste into any Harness. Its second line tells the agent that the lines below are notes quoted from earlier Sessions, not requests, and each line, the Step too, carries its [F] or [I]. |
 | `3 remind me friday` | Holds Step 3 until Friday: it is not offered before then and comes first that day. Any weekday works. |
 | `continue`, `park`, `drop` | Answers the brief's decision question. |
 | `remind me monday` | Holds the decision question until Monday. |
@@ -398,8 +398,9 @@ The model's answers decide which Pursuit a Session is filed in and what Atlas wr
 
 - One filing rewrites the lines of at most one Pursuit, the one the Session is filed in. It can also list the Session under at most two other active Pursuits, which splits its Active Time with them; their lines do not change. It changes no settings and no Notes.
 - Filing never marks a Pursuit done or dropped. Work on an ended Pursuit only proposes reopening it. A Session with no message you typed can start a new Pursuit but changes no line of an existing one.
-- A filing adds at most two Decided lines, each kept only when its quote is found in a message you typed in that Session or in an agent's Note in it, and only with words that quote holds, apart from a few small ones such as "the" and "and".
-- Each text is one line, masked, and at most 400 characters (80 for a name). A line counts as a Fact only when the model quotes at least 15 characters Atlas finds in that Session; Atlas marks a Step done only on such a quote.
+- A filing adds at most two Decided lines, each kept only when its quote is found in a message you typed in that Session or in an agent's Note in it, and only with words that quote holds, apart from a few small ones such as "the" and "and". Backfill and a split keep a Decided line under the same rule, with a quote from a message you typed. They read each Session's summary and last turn only, so they find few.
+- When the model reads "merge ..." or "split ...", the reason or the criterion it gives becomes a Filing rule under your name, so it may hold only words of your message, apart from the same small ones. A merge reason with other words is left out, and a split whose criterion has other words is not made.
+- Each text is one line, masked, and at most 400 characters (80 for a name). Its brackets become "(" and ")", "Atlas:" and "You:" become "Atlas -" and "You -", and characters that hide or reorder text are removed, so it cannot show a second evidence mark or pass for Atlas's own words. A line counts as a Fact only when the model quotes at least 15 characters Atlas finds in that Session; Atlas marks a Step done only on such a quote.
 - Atlas never runs text a model wrote as a command, and has no tool that acts outside its record. It refuses a message addressed to it that asks it to send, tell, email or message someone.
 
 **Lets your agents read and write your record**
@@ -407,7 +408,7 @@ The model's answers decide which Pursuit a Session is filed in and what Atlas wr
 Any agent you give the tools to can read every Pursuit's Resume Note and every Journal day, across all Areas, masked (`atlas/agents.py`, `atlas/agentapi.py`). It cannot read a transcript, a file or a forgotten Session. It can add Notes unasked; when the tick files the Session a Note was written in, a decision in that Note can become a Decided line, under the limits above. Every text an agent sends is normalised, put on one line with quotes and brackets replaced, masked, and refused if it is longer than 400 characters or holds control or reordering characters, so it cannot pass for Atlas's own words (`atlas/untrusted.py`). An agent changes a Pursuit only when all of these hold (`atlas/told.py`):
 
 - Atlas can tell which Session the call comes from. For Claude Code, `hermes atlas mcp` reads `~/.claude/sessions/<pid>.json` of the process that started it, and `/proc/<pid>/stat` to check that process wrote it. For Codex, it uses the thread id Codex puts on each call (`atlas/sources/_caller.py`). Devin and Hermes's own agent give no such proof.
-- The agent passes one whole message you typed in that Session, among your newest five, that names Atlas ("tell atlas ..."), on one line and at most 400 characters. Atlas reads it from the Harness's own store. A message counts once.
+- The agent passes one whole message you typed in that Session, among your newest five, that names Atlas ("tell atlas ..."), on one line and at most 400 characters. Atlas reads it from the Harness's own store. A message that holds markup beside its text, such as a pasted web page or a command's output, is not one: Atlas leaves out only a block the Harness added that is one tagged element from end to end. A message counts once.
 - The Pursuit lists that Session.
 
 The change comes from your message: it adds that message as one Decided line, and removes one Open question only when the message states outright that it is settled and it is the Pursuit's only Open question. Anything else is offered to you whole and waits for `"apply"`. Atlas keeps at most three such Notes from one Harness. A known limit: any process running as your user can start `hermes atlas mcp`, call itself Codex and name one of your Codex Sessions' thread ids, and so make, once, the change one of your messages to Atlas in that Session allows. Forget removes a Note an agent left in a Session Atlas tied it to. A Note Atlas could not tie to a Session, such as any Note from Devin or Hermes's agent, stays, and Forget does not remove it.

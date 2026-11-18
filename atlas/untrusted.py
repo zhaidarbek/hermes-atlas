@@ -17,6 +17,7 @@ _QUOTE_NAMES = ("QUOTATION", "PRIME", "GERESH", "GERSHAYIM", "DITTO", "APOSTROPH
                 "TURNED COMMA", "REVERSED COMMA")
 _SPEAKER = re.compile(r"(?<![^\W_])(atlas|you)\s*:", re.I)
 _WORD = re.compile(r"[^\W_]+")
+_NOT_PLAIN = re.compile(r"[^ -Z\\^-z|~]")      # every character but the ASCII ones _shown keeps as they are
 
 
 class Refused(ValueError):
@@ -42,20 +43,32 @@ def one_line(value: object, most: int, what: str) -> str:
     text = " ".join(privacy.scrub(text).split())
     if not text:
         raise Refused(f"{what} must be text.")
+    return _outside_masks(text, lambda part: _SPEAKER.sub(lambda m: m[1] + " -", part))
+
+
+def unmarked(text: str) -> str:
+    """`text` a model wrote, under the rules of `one_line` that keep a text from reading as one of
+    Atlas's marks or as Atlas speaking: without format characters, reordering ones among them;
+    every bracket as "(" or ")" and every colon as ":" (masks excepted); and "Atlas:" or "You:" as
+    "Atlas -". Quotation marks stay, and nothing is refused."""
+    return _outside_masks(text, lambda part: _SPEAKER.sub(
+        lambda m: m[1] + " -", _NOT_PLAIN.sub(lambda m: _shown(m[0], quotes=False), part)))
+
+
+def _outside_masks(text: str, change) -> str:
     masks = privacy.MASK.findall(text)
-    parts = privacy.MASK.split(text)
-    shown = [_SPEAKER.sub(lambda m: m[1] + " -", p) for p in parts]
-    return "".join(s + (masks[i] if i < len(masks) else "") for i, s in enumerate(shown))
+    return "".join(change(part) + (masks[i] if i < len(masks) else "")
+                   for i, part in enumerate(privacy.MASK.split(text)))
 
 
-def _shown(c: str) -> str:
+def _shown(c: str, quotes: bool = True) -> str:
     kind = unicodedata.category(c)
     if c in "\t\n\r":
         return " "
     if kind in ("Cf", "Cc"):
         return ""
-    if c in "\"`" or kind in ("Pi", "Pf") or ((kind == "Lm" or kind[0] not in "LN") and any(
-            n in unicodedata.name(c, "") for n in _QUOTE_NAMES)):
+    if quotes and (c in "\"`" or kind in ("Pi", "Pf") or ((kind == "Lm" or kind[0] not in "LN") and any(
+            n in unicodedata.name(c, "") for n in _QUOTE_NAMES))):
         return "'"
     if (kind[0] not in "LN" and "COLON" in unicodedata.name(c, "").split()) or c == "\u2236":
         return ":"

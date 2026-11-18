@@ -2385,3 +2385,19 @@ def test_a_title_cut_from_the_first_turn_keeps_no_part_of_a_secret(tmp_path, thr
     Atlas(rec, None).tick(NOW)
     (s,) = rec.snapshot().sessions()
     assert s.title == title
+
+
+TOLD = "tell atlas we park the shelf"
+
+
+@pytest.mark.parametrize("blocks, typed", [
+    ([TOLD], TOLD),
+    (["<ide_opened_file>The user opened shelf.md</ide_opened_file>", TOLD], TOLD),
+    ([f"<system-reminder>\nnote\n</system-reminder>{TOLD}"], None),
+    ([f"<div class=a>\npage\n</div>{TOLD}<p>\nfooter\n</p>"], None),
+    ([f"<p>page</p>\n{TOLD}\n<br>"], None),
+    (["<system-reminder>note</system-reminder>", f"{TOLD} <b>now</b>"], None),
+])
+def test_text_beside_markup_in_one_block_is_never_the_owner_s_typed_text(blocks, typed):
+    from atlas.sources import _caller
+    assert _caller._owner_text(blocks) == typed

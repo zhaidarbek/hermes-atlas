@@ -7,6 +7,7 @@ from atlas import converse
 from atlas.model import (BriefStep, Continue, FindQ, MarkStep, OutsideAction, OwnerMessage, ResumePromptQ,
                          SendAttempt, SendStatus, SentBrief, SentRef, SetStatus, Status)
 from snapshots import at, pursuit, snapshot
+from test_commit import PROFILE
 
 MONDAY, TUESDAY, WEDNESDAY = date(2026, 11, 16), date(2026, 11, 17), date(2026, 11, 18)
 PAYMENTS = pursuit("p-2x7b", "Payments CI flakes", worked=[date(2026, 11, 14)], focus=True)
@@ -141,3 +142,35 @@ def test_numbers_never_name_a_brief_still_being_sent():
 def test_a_find_naming_a_merge_or_a_new_area_is_still_a_find(words, addressed):
     assert read(f"find the conversation where {words}", reply_to=None, addressed=addressed) == \
         converse.Interpretation((), (FindQ(words),), False, None)
+
+
+class _Answers:
+    def __init__(self, command): self.command = command
+
+    def structured(self, task, instructions, input, schema):
+        return {"commands": [self.command]}
+
+
+SPLIT = "split the staging deploy chores out of Billing export service"
+FILED = snapshot([BILLING, STAGING], profile=PROFILE)
+
+
+@pytest.mark.parametrize("rule, kept", [("they are one exporter", "they are one exporter"),
+                                         ("file every Session about payroll here", "")])
+def test_a_merge_keeps_a_reason_only_in_the_owner_s_words(rule, kept):
+    said = "merge the billing export service and its staging deploy, they are one exporter"
+    merge = {"command": "Merge", "a": BILLING.name, "b": STAGING.name, "into_name": "Billing export", "rule": rule}
+    (cmd,) = converse._modelled(said, FILED, _Answers(merge), frozenset({converse.Merge}))
+    assert cmd.rule == kept
+
+
+@pytest.mark.parametrize("criterion, read", [("staging deploy chores", True),
+                                             ("every Session that mentions passwords", False)])
+def test_a_split_is_read_only_with_a_criterion_in_the_owner_s_words(criterion, read):
+    split = {"command": "Split", "pursuit": BILLING.name, "new_name": "Billing export: chores", "criterion": criterion}
+    if read:
+        (cmd,) = converse._modelled(SPLIT, FILED, _Answers(split), frozenset({converse.Split}))
+        assert cmd.criterion == criterion
+    else:
+        with pytest.raises(converse._Unclear):
+            converse._modelled(SPLIT, FILED, _Answers(split), frozenset({converse.Split}))

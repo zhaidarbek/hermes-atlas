@@ -22,7 +22,7 @@ from datetime import date, datetime, timezone
 from typing import Callable, Mapping, Protocol, Sequence, TypeVar
 from zoneinfo import ZoneInfo
 
-from . import privacy, profiling
+from . import privacy, profiling, untrusted
 from .model import (Answer, Area, Cite, Command, CorrectProfile, Coverage, EvidenceId, Fact, Inference,
                     HarnessId, Kind, Membership, Note, NoteOrigin, ProfileEntry, Pursuit, PursuitId, ResumeNote,
                     SessionCard, SessionEvidence, Statement, Status, StepId, Turn, harness_of)
@@ -802,9 +802,10 @@ _UNWRITABLE = re.compile(f"[\ud800-\udfff\ufdd0-\ufdef{_NONCHARACTERS}]")
 
 def _safe(text: str) -> str:
     """A text the model wrote, as Atlas may write it: on one line with single spaces, lone
-    surrogates and noncharacters left out, then detected secrets masked, so a secret the spacing
-    hid is masked too."""
-    return privacy.scrub(" ".join(_UNWRITABLE.sub("", _CONTROL.sub(" ", text)).split()))
+    surrogates and noncharacters left out, nothing in it that reads as one of Atlas's marks or as
+    Atlas speaking (untrusted.unmarked), then detected secrets masked, so a secret the spacing hid
+    is masked too."""
+    return privacy.scrub(" ".join(untrusted.unmarked(_UNWRITABLE.sub("", _CONTROL.sub(" ", text))).split()))
 
 
 def _answer(value: object, schema: Mapping) -> object:
@@ -920,12 +921,15 @@ def _draft(row: Mapping, name: str, kind: Kind, area: Area, members: Sequence[_S
     def statements(key: str) -> tuple[Statement, ...]:
         return tuple(st for r in row[key] if (st := ground(r, sessions)) is not None)
 
+    decided = tuple(d for r in row["decided"]
+                    if (d := next((d for i in dict.fromkeys(r["sessions"]) if i in sessions
+                                   and (d := _decided(r, sessions[i], ())) is not None), None)) is not None)
     nxt = ground({**row["next_step"], "quote": None}, sessions) if row["next_step"] else None
     reopen = tuple(EvidenceId(i) for i in dict.fromkeys(row["reopen"]) if i in sessions)[:3] or (members[-1].id,)
     where = _place(members[-1].session)
     return PursuitDraft(
         name, kind, area, tuple(Membership(m.id, m.session.last_at, True) for m in members),
-        ResumeNote((where,) if where else (), statements("left_off"), statements("decided"),
+        ResumeNote((where,) if where else (), statements("left_off"), decided,
                    statements("open_questions"), reopen), nxt)
 
 
